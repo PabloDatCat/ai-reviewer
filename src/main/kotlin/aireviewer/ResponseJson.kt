@@ -95,5 +95,8 @@ internal fun JsonObject.requireString(key: String, reason: FailureReason): Strin
     stringField(key) ?: throw ReviewFailure(reason)
 
 internal fun JsonObject.requireNonnegativeInt(key: String, reason: FailureReason): Int =
-    (this[key] as? JsonPrimitive)?.takeUnless { it.isString }?.content
-        ?.takeIf(unsignedJsonInteger::matches)?.toIntOrNull() ?: throw ReviewFailure(reason)
+    this[key].requireNonnegativeLong(reason).takeIf { it <= Int.MAX_VALUE }?.toInt() ?: throw ReviewFailure(reason)
+
+internal fun JsonElement?.requireNonnegativeLong(reason: FailureReason): Long =
+    (this as? JsonPrimitive)?.takeUnless { it.isString }?.content
+        ?.takeIf(unsignedJsonInteger::matches)?.toLongOrNull() ?: throw ReviewFailure(reason)

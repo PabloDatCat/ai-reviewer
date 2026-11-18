@@ -7,6 +7,7 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
 import java.util.Base64
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -117,6 +118,10 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
 
         val file = readTree(tree)[components.last()] ?: throw ReviewFailure(reason)
         if (file.mode !in setOf("100644", "100755") || file.type != "blob") throw ReviewFailure(reason)
+        // The base64 representation of a large file can exceed the transport limit.
+        if (file.advertisedSize != null && file.advertisedSize.requireNonnegativeLong(reason) > MAX_BLOB_BYTES) {
+            throw ReviewFailure(FailureReason.LIMIT)
+        }
         return readBlob(file.sha)
     }
 
@@ -148,6 +153,7 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
                     mode = entry.requireString("mode", reason),
                     type = entry.requireString("type", reason),
                     sha = entry.requireSha("sha", reason),
+                    advertisedSize = entry["size"],
                 )
                 if (put(path, metadata) != null) throw ReviewFailure(reason)
             }
@@ -190,7 +196,7 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
         .header("Authorization", authorization)
         .header("X-GitHub-Api-Version", "2022-11-28")
 
-    private data class TreeEntry(val mode: String, val type: String, val sha: String)
+    private data class TreeEntry(val mode: String, val type: String, val sha: String, val advertisedSize: JsonElement?)
 }
 
 private fun validComponent(path: String): Boolean =

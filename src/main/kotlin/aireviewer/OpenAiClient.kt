@@ -4,6 +4,7 @@ import java.net.URI
 import java.net.http.HttpRequest
 import java.time.Duration
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -65,14 +66,38 @@ private fun completedOutput(response: JsonObject): String {
         invalidResponse()
     }
 
-    val message = response.requireArray("output", INVALID_RESPONSE).singleOrNull().requireObject(INVALID_RESPONSE)
-    if (message.stringField("type") != "message" ||
-        message.stringField("role") != "assistant" ||
-        message.stringField("status") != "completed"
-    ) {
-        invalidResponse()
+    var finalText: String? = null
+    for (value in response.requireArray("output", INVALID_RESPONSE)) {
+        val item = value.requireObject(INVALID_RESPONSE)
+        when (item.stringField("type")) {
+            "reasoning" -> {
+                if ("status" in item && item.stringField("status") != "completed") invalidResponse()
+            }
+            "message" -> {
+                if (item.stringField("role") != "assistant" || item.stringField("status") != "completed") {
+                    invalidResponse()
+                }
+                val content = item.requireArray("content", INVALID_RESPONSE)
+                when (item["phase"]) {
+                    JsonPrimitive("commentary") -> {
+                        if (finalText != null) invalidResponse()
+                        content.forEach { outputText(it) }
+                    }
+                    null, JsonNull, JsonPrimitive("final_answer") -> {
+                        if (finalText != null) invalidResponse()
+                        finalText = outputText(content.singleOrNull())
+                    }
+                    else -> invalidResponse()
+                }
+            }
+            else -> invalidResponse()
+        }
     }
-    val text = message.requireArray("content", INVALID_RESPONSE).singleOrNull().requireObject(INVALID_RESPONSE)
+    return finalText ?: invalidResponse()
+}
+
+private fun outputText(value: JsonElement?): String {
+    val text = value.requireObject(INVALID_RESPONSE)
     if (text.stringField("type") != "output_text") invalidResponse()
     return text.requireString("text", INVALID_RESPONSE)
 }

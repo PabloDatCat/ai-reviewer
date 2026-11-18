@@ -10,6 +10,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Flow
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -203,7 +205,11 @@ class ApiClientsTest {
     @Test
     fun sourceKindsAndLimitsUseStrictDecodingAndDecodedByteCounts() {
         val exact = "é".repeat(131_072).toByteArray()
-        val valid = sourceFixture(blob = HttpReply(200, blobJson(exact)))
+        val tree = treeJson(TREE, listOf(
+            entryJson("a.kt", "100644", "blob", size = "262144"),
+            entryJson("unrelated-large.kt", "100644", "blob", HEAD, size = "1048576"),
+        ))
+        val valid = sourceFixture(tree = HttpReply(200, tree), blob = HttpReply(200, blobJson(exact)))
         assertEquals(262_144, github(valid).sourceFile(OLD, "a.kt").bytes.size)
         val wrapped = sourceFixture(blob = HttpReply(200, blobJson("hello\n".toByteArray(), content = "aGVs\r\nbG8K\n")))
         assertEquals("hello\n", github(wrapped).sourceFile(OLD, "a.kt").bytes.decodeToString())
@@ -223,6 +229,39 @@ class ApiClientsTest {
         for (blob in invalid) {
             val transport = sourceFixture(blob = HttpReply(200, blob))
             assertFailure(FailureReason.SOURCE_UNAVAILABLE) { github(transport).sourceFile(OLD, "a.kt") }
+        }
+    }
+
+    @Test
+    fun largeRegularFileWithASmallPatchIsRejectedBeforeTheBlobGet() {
+        val largeFile = ByteArray(1_048_576) { 'x'.code.toByte() }
+        "old\n".encodeToByteArray().copyInto(largeFile)
+        val transport = RecordingTransport(
+            "GET $COMPARE" to HttpReply(200, compareJson()),
+            "GET $ROOT/git/commits/$OLD" to HttpReply(200, commitJson(OLD, TREE)),
+            "GET $ROOT/git/trees/$TREE" to HttpReply(200, treeJson(TREE, listOf(
+                entryJson("a.kt", "100644", "blob", size = "1048576"),
+            ))),
+            "GET $ROOT/git/blobs/$BLOB" to HttpReply(200, blobJson(largeFile)),
+        )
+        val github = GitHubClient(REPO, GITHUB_TOKEN, HttpTransport { request ->
+            val reply = transport.send(request)
+            if (reply.body.encodeToByteArray().size > 1_048_576) throw ReviewFailure(FailureReason.HTTP)
+            reply
+        })
+        val snapshot = github.comparison(BASE, HEAD)
+        val diff = prepareDiff(snapshot.files)
+        assertFailure(FailureReason.LIMIT) { verifyPatchText(diff, snapshot, github) }
+        assertEquals(listOf("GET $COMPARE", "GET $ROOT/git/commits/$OLD", "GET $ROOT/git/trees/$TREE"), transport.routes)
+    }
+
+    @Test
+    fun invalidAdvertisedBlobSizeIsRejectedBeforeTheBlobGet() {
+        for (size in listOf("null", "-1", "1.0", "\"1\"", "true")) {
+            val tree = treeJson(TREE, listOf(entryJson("a.kt", "100644", "blob", size = size)))
+            val transport = sourceFixture(tree = HttpReply(200, tree))
+            assertFailure(FailureReason.SOURCE_UNAVAILABLE) { github(transport).sourceFile(OLD, "a.kt") }
+            assertEquals(2, transport.requests.size)
         }
     }
 
@@ -308,6 +347,81 @@ class ApiClientsTest {
         val transport = modelResponse(incomplete)
         assertFailure(FailureReason.INVALID_RESPONSE) { model(transport).review(diff(), RULES) }
         assertEquals(1, transport.requests.size)
+    }
+
+    @Test
+    fun completedFinalIgnoresReasoningAndCommentary() {
+        val reply = responseWithOutput(
+            """{"type":"reasoning","id":"rs_test","summary":[{"type":"summary_text","text":"$RAW_MARKER"}]}""",
+            assistantMessage(output = """{"findings":[]}""", phase = JsonPrimitive("commentary")),
+            assistantMessage(phase = JsonPrimitive("final_answer")),
+        )
+        val transport = modelResponse(reply)
+        val finding = model(transport).review(diff(), RULES).findings.single()
+        assertEquals("Переполнение", finding.title)
+        assertEquals("Utf8 🚚", finding.explanation)
+        assertEquals(1, transport.requests.size)
+    }
+
+    @Test
+    fun commentaryAloneCannotBecomeAReviewEvenWhenItMatchesTheSchema() {
+        assertInvalidModelReply(responseWithOutput(assistantMessage(phase = JsonPrimitive("commentary"))))
+    }
+
+    @Test
+    fun unphasedOrNullPhaseMessageCanBeTheUniqueFinal() {
+        for (phase in listOf(null, JsonNull)) {
+            val reply = responseWithOutput(
+                """{"type":"reasoning","id":"rs_test","status":"completed","summary":[]}""",
+                assistantMessage(output = "Interim text", phase = JsonPrimitive("commentary")),
+                assistantMessage(phase = phase),
+            )
+            assertEquals("Переполнение", model(modelResponse(reply)).review(diff(), RULES).findings.single().title)
+        }
+    }
+
+    @Test
+    fun invalidOutputRejectsCompetingFinalsAndUnexpectedPhases() {
+        val final = assistantMessage(phase = JsonPrimitive("final_answer"))
+        val commentary = assistantMessage(phase = JsonPrimitive("commentary"))
+        val unphased = assistantMessage()
+        for (reply in listOf(
+            responseWithOutput(final, final),
+            responseWithOutput(unphased, final),
+            responseWithOutput(unphased, unphased),
+            responseWithOutput(final, commentary),
+            responseWithOutput(assistantMessage(phase = JsonPrimitive("unknown"))),
+            responseWithOutput(assistantMessage(phase = JsonPrimitive(1))),
+        )) {
+            assertInvalidModelReply(reply)
+        }
+    }
+
+    @Test
+    fun invalidOutputRejectsForbiddenOrIncompleteItemsBeforeTheFinal() {
+        val final = assistantMessage(phase = JsonPrimitive("final_answer"))
+        val badItems = listOf(
+            """{"type":"reasoning","id":"rs_test","status":"incomplete","summary":[]}""",
+            """{"type":"reasoning","id":"rs_test","status":"in_progress","summary":[]}""",
+            """{"type":"function_call","name":"fake_tool","status":"completed"}""",
+            """{"type":"web_search_call","id":"ws_test","status":"completed"}""",
+            assistantMessage(status = "incomplete", phase = JsonPrimitive("commentary")),
+            assistantMessage(role = "developer", phase = JsonPrimitive("commentary")),
+            assistantMessage(
+                content = """[{"type":"refusal","refusal":"$RAW_MARKER"}]""",
+                phase = JsonPrimitive("commentary"),
+            ),
+        )
+        badItems.forEach { assertInvalidModelReply(responseWithOutput(it, final)) }
+        assertInvalidModelReply(responseWithOutput("""{"type":"reasoning","id":"rs_test","summary":[]}"""))
+    }
+
+    @Test
+    fun finalMessageMustContainOneStrictJsonDocument() {
+        val text = """{"type":"output_text","text":${JsonPrimitive(findingPayload())}}"""
+        val phase = JsonPrimitive("final_answer")
+        assertInvalidModelReply(responseWithOutput(assistantMessage(phase = phase, content = "[$text,$text]")))
+        assertInvalidModelReply(responseWithOutput(assistantMessage(phase = phase, output = "{} {}")))
     }
 
     @Test
@@ -529,8 +643,11 @@ class ApiClientsTest {
         fun treeJson(sha: String, entries: List<String>, truncated: Boolean = false) =
             """{"sha":"$sha","truncated":$truncated,"tree":[${entries.joinToString()}],"url":"https://evil.example/tree"}"""
 
-        fun entryJson(path: String, mode: String, type: String, sha: String = BLOB) =
-            """{"path":${JsonPrimitive(path)},"mode":"$mode","type":"$type","sha":"$sha","url":"https://evil.example/blob"}"""
+        fun entryJson(path: String, mode: String, type: String, sha: String = BLOB, size: String? = null): String {
+            val sizeField = size?.let { ""","size":$it""" }.orEmpty()
+            return """{"path":${JsonPrimitive(path)},"mode":"$mode","type":"$type","sha":"$sha"$sizeField,
+                "url":"https://evil.example/blob"}"""
+        }
 
         fun blobJson(
             bytes: ByteArray,
@@ -564,7 +681,25 @@ class ApiClientsTest {
             role: String = "assistant",
             metadata: String = "",
             content: String = """[{"type":"output_text","text":${JsonPrimitive(output)}}]""",
-        ) = """{"status":"$status",$metadata"output":[{"type":"message","status":"$messageStatus","role":"$role","content":$content}]}"""
+        ) = responseWithOutput(
+            assistantMessage(status = messageStatus, role = role, content = content),
+            status = status,
+            metadata = metadata,
+        )
+
+        fun responseWithOutput(vararg items: String, status: String = "completed", metadata: String = "") =
+            """{"status":"$status",$metadata"output":[${items.joinToString()}]}"""
+
+        fun assistantMessage(
+            output: String = findingPayload(),
+            status: String = "completed",
+            role: String = "assistant",
+            phase: JsonElement? = null,
+            content: String = """[{"type":"output_text","text":${JsonPrimitive(output)}}]""",
+        ): String {
+            val phaseField = phase?.let { ""","phase":$it""" }.orEmpty()
+            return """{"type":"message","status":"$status","role":"$role"$phaseField,"content":$content}"""
+        }
 
         fun nestedMetadata(arrayDepth: Int): String {
             val nested = "[".repeat(arrayDepth) + "null" + "]".repeat(arrayDepth)
