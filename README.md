@@ -6,12 +6,14 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 
 1. Опубликуйте workflow, исходники CLI, доверенный prompt, файлы Gradle и Wrapper в защищённой доверенной ветке репозитория. Для первичной настройки опубликуйте workflow в default branch. Проверьте правила Actions организации и репозитория для события `pull_request_target` и доступность GitHub-hosted runner.
 2. Создайте метку `ai-review`. Для запуска её ставит пользователь с эффективным GitHub permission `write` или `admin` на открытый PR, который вышел из draft.
-3. В настройках **Secrets and variables → Actions** сохраните `OPENAI_API_KEY` как repository secret с ключом API-проекта организации. Установите repository variable `LLM_MODEL` в `gpt-5.4-2026-03-05`. `GITHUB_TOKEN` выдаёт сам GitHub.
+3. В настройках **Secrets and variables → Actions** сохраните `OPENAI_API_KEY` как repository secret с ключом API-проекта организации. Установите repository variable `LLM_MODEL` в имя выбранной модели OpenAI. Имя передаётся в API без проверки на фиксированный snapshot или allowlist; для смены модели достаточно изменить переменную. `GITHUB_TOKEN` выдаёт сам GitHub.
 4. Выполните проверки приёмки ниже в подготовленном репозитории. Профиль OpenAI и smoke-проверки GitHub нужны перед production rollout.
 
 Событие `pull_request_target` обрабатывается только при установке метки. Workflow делает checkout `github.workflow_sha` в `reviewer` с `persist-credentials: false`, собирает CLI через Gradle Wrapper и передаёт переменные с ключами только шагу запуска. Файлы PR поступают в reviewer как данные через Compare и Git Data API. Тесты кода PR запускаются в отдельном непривилегированном CI. GitHub объявил применение default block с 2 декабря 2026 года для затронутых публичных репозиториев со старой политикой по умолчанию. Проверьте policy insights. Workflow использует доверенный SHA и сохраняет защиту checkout. [Безопасность pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 
-Для повторной проверки снимите и снова поставьте `ai-review`. Push сам по себе не запускает ревью. Ручной Re-run игнорируется. Для одного PR один job выполняется, а следующие ждут в группе `ai-review-pr-<номер>`. GitHub поддерживает до 100 ожидающих jobs в `queue: max` и отменяет новые при переполнении. Текущий job сохраняется, разные PR могут проверяться параллельно. [Concurrency в GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+Для повторной проверки нажмите Re-run/Restart в GitHub Actions либо снимите и снова поставьте `ai-review`. Ручной повтор берёт актуальные SHA и ветки PR и снова вызывает модель; PR должен оставаться открытым, не draft и с меткой `ai-review`. Push сам по себе не запускает ревью. Для одного PR один job выполняется, а следующие ждут в группе `ai-review-pr-<номер>`. GitHub поддерживает до 100 ожидающих jobs в `queue: max` и отменяет новые при переполнении. Текущий job сохраняется, разные PR могут проверяться параллельно. [Concurrency в GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+
+Обновлённое поведение Re-run действует для запусков с новой версией workflow. После публикации обновления один раз снимите и снова поставьте `ai-review`: старый run при перезапуске использует прежнюю версию workflow и reviewer.
 
 ## Что проверяется
 
@@ -30,11 +32,32 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 
 | Исход | Код процесса | Что происходит |
 | --- | --- | --- |
-| IGNORED | 0 | Событие, попытка или права не подходят. Комментарий и запрос модели отсутствуют. |
+| IGNORED | 0 | Событие, номер попытки или права не подходят. Комментарий и запрос модели отсутствуют. |
 | SKIPPED | 0 | До вызова модели сработал лимит входных данных или не удалось подтвердить patches. При повторно подтверждённом состоянии возможен фиксированный комментарий. |
 | STALE | 0 | Изменились состояние или идентификаторы PR. Комментарий не публикуется. |
 | REVIEWED | 0 | Опубликован проверенный результат по указанному снимку. |
-| ERROR | 1 | Сбой конфигурации, API, дедлайна, результата или публикации. Фиксированная диагностика возможна при подтверждённых правах, актуальном PR и оставшемся budget. |
+| ERROR | 1 | Сбой конфигурации, API, дедлайна, результата или публикации. Комментарий об ошибке не отправляется; диагностика только в Actions logs. |
+
+## Диагностика OpenAI
+
+В логах шага Run the reviewer перед итоговым `ERROR OPENAI` или `ERROR INVALID_RESPONSE` выводится строка `OPENAI_ERROR`: HTTP status, `code`, `type`, `param`, `request_id` и безопасное пояснение, если соответствующие поля доступны. При ошибке ревью комментарий в PR не отправляется; причина остаётся в логах Actions.
+
+~~~~text
+OPENAI_ERROR http_status=429 code=insufficient_quota type=insufficient_quota request_id=req_example: API project quota is exhausted. Check billing, credits and project spending limits.
+ERROR OPENAI
+~~~~
+
+| Причина | Что проверить |
+| --- | --- |
+| `insufficient_quota` | API billing, кредиты и spending limit проекта |
+| `rate_limit_exceeded` | Лимиты запросов и токенов; повторить Re-run позже |
+| HTTP 401 / `invalid_api_key` | Repository secret OPENAI_API_KEY и его API-проект |
+| HTTP 403 / `model_not_found` | Доступ проекта к модели из LLM_MODEL |
+| HTTP 400 / `unsupported_value`, `unsupported_parameter` | Поле `param`; например, поддержку `reasoning.effort=none` выбранной моделью |
+| `incomplete_reason=max_output_tokens` | Ответ не поместился в 6000 output tokens; частичные findings не публикуются |
+| HTTP 5xx или timeout | Доступность сервиса и сети; request_id пригодится для обращения в поддержку |
+
+При неизвестном HTTP 429 конкретная причина не угадывается. Для не-JSON ответа остаются HTTP status и безопасное пояснение. Исходные `error.message`, response body, prompt, diff и ключи не выводятся. Метаданные ограничены по длине и допустимым символам; диагностика API остаётся в логах Actions и не добавляется в публичный комментарий PR. Автоматических повторов запроса нет.
 
 ## Локальная проверка
 
@@ -54,7 +77,7 @@ actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected
 
 ## Приёмка профиля OpenAI
 
-Проба запускается вручную вне Actions. Она использует только синтетический код и тот же `OpenAiClient`, prompt, строгую схему и HTTP transport, что и CLI. Перед запуском передайте тестовый ключ API-проекта через переменную окружения `OPENAI_API_KEY`.
+Проба запускается вручную вне Actions. Она использует только синтетический код и тот же `OpenAiClient`, prompt, строгую схему и HTTP transport, что и CLI. Перед запуском задайте переменные окружения `OPENAI_API_KEY` и `LLM_MODEL`. Модель должна поддерживать Responses API, strict JSON schema и используемый параметр `reasoning.effort=none`.
 
 ~~~~sh
 ./gradlew testClasses installDist
@@ -63,11 +86,11 @@ actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected
   aireviewer.LiveProfileProbe --show-synthetic-findings
 ~~~~
 
-Проба делает по одному запросу на каждый из восьми сценариев для точного профиля `gpt-5.4-2026-03-05`, `reasoning.effort=none`, `max_output_tokens=6000`. Ожидаются пустые findings для изменений только стиля и для случая с явно показанной валидацией, по одному реалистичному замечанию каждой из пяти категорий в пяти коротких случаях и пять замечаний для Unicode diff около 30 000 символов. Последний случай также проверяет форматирование корректных ссылок. Параметр `--case=<имя>` выбирает один сценарий для отдельной проверки.
+Проба делает по одному запросу на каждый из восьми сценариев для модели из `LLM_MODEL` с параметрами `reasoning.effort=none`, `max_output_tokens=6000`. Ожидаются пустые findings для изменений только стиля и для случая с явно показанной валидацией, по одному реалистичному замечанию каждой из пяти категорий в пяти коротких случаях и пять замечаний для Unicode diff около 30 000 символов. Последний случай также проверяет форматирование корректных ссылок. Параметр `--case=<имя>` выбирает один сценарий для отдельной проверки.
 
 Код 0 подтверждает автоматические проверки схемы, координат, файлов, категорий и формирования ссылок. Для семантической приёмки оцените замечания из вывода этого же запуска с `--show-synthetic-findings`. Для каждого замечания подтвердите достижимость предпосылок, конкретную последовательность действий и наблюдаемое последствие.
 
-Сохраните факт completed или отказа, HTTP status, latency, output и reasoning token usage по каждому случаю. Не сохраняйте diff, ключи или необработанный ответ API. При ошибке транспорта, доступа, схемы или неполном ответе проба останавливает оставшиеся вызовы. Провал профиля останавливает rollout. Изменение профиля требует отдельного доверенного изменения и повторной приёмки.
+Сохраните факт completed или отказа, HTTP status, latency, output и reasoning token usage по каждому случаю. Не сохраняйте diff, ключи или необработанный ответ API. При ошибке транспорта, доступа, схемы или неполном ответе проба останавливает оставшиеся вызовы. Провал профиля останавливает rollout. Для смены модели измените `LLM_MODEL`; код менять не нужно. Повторная приёмка позволяет оценить совместимость и качество выбранной модели.
 
 ## Приёмка на GitHub
 
