@@ -181,9 +181,23 @@ class HttpTransportTest {
             transport(realClient(probe), server.origin).use { transport ->
                 assertEquals(1_048_576, transport.send(request(server.origin, "/at-limit")).body.length)
                 assertEquals(1, probe.closedCount.get())
-                assertFailure(FailureReason.LIMIT) { transport.send(request(server.origin, "/above-limit")) }
+                assertFailure(FailureReason.HTTP) { transport.send(request(server.origin, "/above-limit")) }
                 assertEquals(2, probe.closedCount.get())
                 assertEquals(0, probe.activeReads.get())
+            }
+        }
+    }
+
+    @Test
+    fun oversizedServerErrorIsAProtocolFailure() {
+        val payload = ByteArray(1_048_577) { 'x'.code.toByte() }
+        RawServer { socket, _ ->
+            respond(socket, payload.size, payload, status = "502 Bad Gateway")
+        }.use { server ->
+            val probe = BodyProbe()
+            transport(realClient(probe), server.origin).use { transport ->
+                assertFailure(FailureReason.HTTP) { transport.send(request(server.origin)) }
+                assertReaderStopped(probe)
             }
         }
     }

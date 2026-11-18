@@ -213,7 +213,7 @@ private class Exchange(
                 publishedBody = body
             }
             val bytes = body.stream.readNBytes(MAX_BODY_BYTES + 1)
-            if (bytes.size > MAX_BODY_BYTES) throw ReviewFailure(FailureReason.LIMIT)
+            if (bytes.size > MAX_BODY_BYTES) throw ReviewFailure(FailureReason.HTTP)
             return HttpReply(response.statusCode(), bytes.decodeToString(throwOnInvalidSequence = true), response.headers().map())
         } finally {
             body.close()
