@@ -25,14 +25,14 @@ fun runReview(ctx: RunContext, github: GitHubApi, llm: LlmReviewer, rules: Strin
 private data class ReviewExecution(val outcome: Outcome, val reason: FailureReason? = null)
 
 private class ReviewRun(
-    private val ctx: RunContext,
+    private var ctx: RunContext,
     private val github: GitHubApi,
     private val llm: LlmReviewer,
     private val rules: String,
     private val budget: ReviewBudget,
 ) {
     fun run(): ReviewExecution {
-        if (ctx.runAttempt != 1) return ReviewExecution(Outcome.IGNORED)
+        if (ctx.runAttempt < 1) return ReviewExecution(Outcome.IGNORED)
         return try {
             reviewAuthorizedPullRequest()
         } catch (failure: TransportCleanupFailure) {
@@ -52,6 +52,10 @@ private class ReviewRun(
     private fun reviewAuthorizedPullRequest(): ReviewExecution {
         if (request { github.permission(ctx.actor) } !in writePermissions) return ReviewExecution(Outcome.IGNORED)
         val original = request { github.pullRequest(ctx.number) }
+        if (ctx.runAttempt > 1) {
+            ctx = ctx.copy(baseSha = original.baseSha, headSha = original.headSha,
+                baseRef = original.baseRef, headRef = original.headRef)
+        }
         if (!original.matchesEvent()) return ReviewExecution(Outcome.STALE)
 
         val snapshot: DiffSnapshot
@@ -139,7 +143,7 @@ private fun requireActive(budget: ReviewBudget) {
 internal fun loadRunContext(env: (String) -> String?, readEvent: (String) -> String): RunContext? {
     if (env("GITHUB_EVENT_NAME") != "pull_request_target") return null
     val attempt = env("GITHUB_RUN_ATTEMPT")?.toIntOrNull()
-    if (attempt != 1) return null
+    if (attempt == null || attempt < 1) return null
 
     val repo = requiredEnv(env, "GITHUB_REPOSITORY")
     val actor = requiredEnv(env, "GITHUB_ACTOR")

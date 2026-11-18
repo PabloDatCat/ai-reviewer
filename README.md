@@ -11,7 +11,9 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 
 Событие `pull_request_target` обрабатывается только при установке метки. Workflow делает checkout `github.workflow_sha` в `reviewer` с `persist-credentials: false`, собирает CLI через Gradle Wrapper и передаёт переменные с ключами только шагу запуска. Файлы PR поступают в reviewer как данные через Compare и Git Data API. Тесты кода PR запускаются в отдельном непривилегированном CI. GitHub объявил применение default block с 2 декабря 2026 года для затронутых публичных репозиториев со старой политикой по умолчанию. Проверьте policy insights. Workflow использует доверенный SHA и сохраняет защиту checkout. [Безопасность pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 
-Для повторной проверки снимите и снова поставьте `ai-review`. Push сам по себе не запускает ревью. Ручной Re-run игнорируется. Для одного PR один job выполняется, а следующие ждут в группе `ai-review-pr-<номер>`. GitHub поддерживает до 100 ожидающих jobs в `queue: max` и отменяет новые при переполнении. Текущий job сохраняется, разные PR могут проверяться параллельно. [Concurrency в GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+Для повторной проверки нажмите Re-run/Restart в GitHub Actions либо снимите и снова поставьте `ai-review`. Ручной повтор берёт актуальные SHA и ветки PR и снова вызывает модель; PR должен оставаться открытым, не draft и с меткой `ai-review`. Push сам по себе не запускает ревью. Для одного PR один job выполняется, а следующие ждут в группе `ai-review-pr-<номер>`. GitHub поддерживает до 100 ожидающих jobs в `queue: max` и отменяет новые при переполнении. Текущий job сохраняется, разные PR могут проверяться параллельно. [Concurrency в GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+
+Обновлённое поведение Re-run действует для запусков с новой версией workflow. После публикации обновления один раз снимите и снова поставьте `ai-review`: старый run при перезапуске использует прежнюю версию workflow и reviewer.
 
 ## Что проверяется
 
@@ -30,7 +32,7 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 
 | Исход | Код процесса | Что происходит |
 | --- | --- | --- |
-| IGNORED | 0 | Событие, попытка или права не подходят. Комментарий и запрос модели отсутствуют. |
+| IGNORED | 0 | Событие, номер попытки или права не подходят. Комментарий и запрос модели отсутствуют. |
 | SKIPPED | 0 | До вызова модели сработал лимит входных данных или не удалось подтвердить patches. При повторно подтверждённом состоянии возможен фиксированный комментарий. |
 | STALE | 0 | Изменились состояние или идентификаторы PR. Комментарий не публикуется. |
 | REVIEWED | 0 | Опубликован проверенный результат по указанному снимку. |

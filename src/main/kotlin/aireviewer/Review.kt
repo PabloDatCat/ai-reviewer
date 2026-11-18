@@ -106,7 +106,7 @@ private const val MAX_DIFF_LENGTH = 30_000
 private const val MAX_COMMENT_LENGTH = 12_000
 
 fun parseContext(event: String, repo: String, actor: String, attempt: Int): RunContext? {
-    if (attempt != 1 || !validRepo(repo) || actor.isBlank()) return null
+    if (attempt < 1 || !validRepo(repo) || actor.isBlank()) return null
     val body = try {
         Json.parseToJsonElement(event) as? JsonObject
     } catch (_: SerializationException) {

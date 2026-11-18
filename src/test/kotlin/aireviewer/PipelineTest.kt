@@ -31,20 +31,60 @@ class PipelineTest {
     }
 
     @Test
-    fun rerunOrWrongEventIsIgnoredBeforeNetworkOrEventRead() {
+    fun invalidAttemptOrWrongEventIsIgnoredBeforeNetworkOrEventRead() {
         val fixture = Fixture()
-        assertEquals(Outcome.IGNORED, fixture.run(context().copy(runAttempt = 2)))
+        assertEquals(Outcome.IGNORED, fixture.run(context().copy(runAttempt = 0)))
         assertTrue(fixture.calls.isEmpty())
 
         for (env in listOf(
             mapOf("GITHUB_EVENT_NAME" to "pull_request", "GITHUB_RUN_ATTEMPT" to "1"),
-            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "2"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "0"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "-1"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "invalid"),
         )) {
             assertNull(loadRunContext(
                 env = { env.getValue(it) },
                 readEvent = { error("An ineligible trigger should not read the event file") },
             ))
         }
+    }
+
+    @Test
+    fun manualRerunLoadsTheEventAndRepeatsReviewOnTheSamePr() {
+        val env = mapOf(
+            "GITHUB_EVENT_NAME" to "pull_request_target",
+            "GITHUB_RUN_ATTEMPT" to "2",
+            "GITHUB_REPOSITORY" to REPO,
+            "GITHUB_ACTOR" to ACTOR,
+            "GITHUB_EVENT_PATH" to "/fake/github-event.json",
+        )
+        val ctx = checkNotNull(loadRunContext(env = env::get, readEvent = { event("labeled") }))
+        assertEquals(context().copy(runAttempt = 2), ctx)
+        val fixture = Fixture(states = List(6) { state() })
+        assertEquals(Outcome.REVIEWED, fixture.run())
+        assertEquals(Outcome.REVIEWED, fixture.run(ctx))
+        assertEquals(2, fixture.llm.attempts)
+        assertEquals(2, fixture.github.comments.size)
+        assertEquals(happyCalls() + happyCalls(), fixture.calls)
+    }
+
+    @Test
+    fun manualRerunReviewsCurrentPrIdentityAfterPushOrRetarget() {
+        val newHead = "e".repeat(40)
+        val current = state().copy(baseSha = DIFFERENT, headSha = newHead,
+            baseRef = "release", headRef = "fork/revised")
+        val fixture = Fixture(
+            states = List(3) { current },
+            snapshot = snapshot().copy(baseSha = DIFFERENT, headSha = newHead),
+            sources = sources().mapKeys { (key, _) -> if (key.first == HEAD) newHead to key.second else key },
+        )
+        assertEquals(Outcome.REVIEWED, fixture.run(context().copy(runAttempt = 2)))
+        assertEquals(1, fixture.llm.attempts)
+        assertTrue("compare:$DIFFERENT...$newHead" in fixture.calls)
+        assertFalse(COMPARE in fixture.calls)
+        val comment = fixture.github.comments.single()
+        assertTrue("head `$newHead`" in comment)
+        assertTrue("base `$DIFFERENT`" in comment)
     }
 
     @Test
