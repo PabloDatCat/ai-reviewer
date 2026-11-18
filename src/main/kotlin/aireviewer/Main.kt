@@ -53,7 +53,7 @@ private class ReviewRun(
         } catch (_: Exception) {
             ReviewExecution(Outcome.ERROR)
         }
-        // Preserve the provider diagnosis even if the final PR check or comment POST fails.
+        // Keep provider diagnostics available to the CLI without publishing them to the PR.
         return execution.copy(openAiError = openAiError ?: execution.openAiError)
     }
 
@@ -111,19 +111,18 @@ private class ReviewRun(
         execution: ReviewExecution,
         render: () -> String,
     ): ReviewExecution {
+        if (execution.outcome == Outcome.ERROR) return execution
         if (!stillCurrent(original)) return ReviewExecution(Outcome.STALE)
         val body = render()
-        val published = if (execution.outcome == Outcome.REVIEWED &&
+        if (execution.outcome == Outcome.REVIEWED &&
             body == renderComment(ctx, Outcome.ERROR, null, null, null)
         ) {
-            ReviewExecution(Outcome.ERROR, FailureReason.INVALID_RESPONSE)
-        } else {
-            execution
+            return ReviewExecution(Outcome.ERROR, FailureReason.INVALID_RESPONSE)
         }
 
         // A failed response can follow an accepted POST. This is the only comment attempt.
         request { github.comment(ctx.number, body) }
-        return published
+        return execution
     }
 
     private fun stillCurrent(original: PullRequestState): Boolean {

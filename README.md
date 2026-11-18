@@ -36,11 +36,11 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 | SKIPPED | 0 | До вызова модели сработал лимит входных данных или не удалось подтвердить patches. При повторно подтверждённом состоянии возможен фиксированный комментарий. |
 | STALE | 0 | Изменились состояние или идентификаторы PR. Комментарий не публикуется. |
 | REVIEWED | 0 | Опубликован проверенный результат по указанному снимку. |
-| ERROR | 1 | Сбой конфигурации, API, дедлайна, результата или публикации. Фиксированная диагностика возможна при подтверждённых правах, актуальном PR и оставшемся budget. |
+| ERROR | 1 | Сбой конфигурации, API, дедлайна, результата или публикации. Комментарий об ошибке не отправляется; диагностика только в Actions logs. |
 
 ## Диагностика OpenAI
 
-В логах шага Run the reviewer перед итоговым `ERROR OPENAI` или `ERROR INVALID_RESPONSE` выводится строка `OPENAI_ERROR`: HTTP status, `code`, `type`, `param`, `request_id` и безопасное пояснение, если соответствующие поля доступны. Диагностика сохраняется и при ошибке последующей проверки PR или публикации комментария.
+В логах шага Run the reviewer перед итоговым `ERROR OPENAI` или `ERROR INVALID_RESPONSE` выводится строка `OPENAI_ERROR`: HTTP status, `code`, `type`, `param`, `request_id` и безопасное пояснение, если соответствующие поля доступны. При ошибке ревью комментарий в PR не отправляется; причина остаётся в логах Actions.
 
 ~~~~text
 OPENAI_ERROR http_status=429 code=insufficient_quota type=insufficient_quota request_id=req_example: API project quota is exhausted. Check billing, credits and project spending limits.

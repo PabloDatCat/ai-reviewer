@@ -282,26 +282,26 @@ class PipelineTest {
         )
         for (respond in failures) {
             val fixture = Fixture(respond = respond)
-            assertFixedDiagnostic(fixture, Outcome.ERROR)
+            assertErrorWithoutComment(fixture)
             assertEquals(1, fixture.llm.attempts)
-            assertEquals(happyCalls(), fixture.calls)
+            assertEquals(happyCalls().take(7), fixture.calls)
         }
     }
 
     @Test
-    fun modelFailureStillRechecksStateAndSuppressesDiagnosticsIfStale() {
+    fun modelFailureStopsWithoutAStateRecheckOrComment() {
         val fixture = Fixture(
             states = listOf(state(), state(), state().copy(headRepo = null)),
             respond = { throw ReviewFailure(FailureReason.INVALID_RESPONSE) },
         )
-        assertEquals(Outcome.STALE, fixture.run())
-        assertEquals(happyCalls().dropLast(1), fixture.calls)
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertEquals(happyCalls().take(7), fixture.calls)
         assertEquals(1, fixture.llm.attempts)
         assertTrue(fixture.github.comments.isEmpty())
     }
 
     @Test
-    fun rendererOverflowPostsOnlyTheCanonicalErrorAndReturnsError() {
+    fun rendererOverflowReturnsErrorWithoutPosting() {
         val longPath = "ë".repeat(700) + ".kt"
         val fixture = Fixture(
             snapshot = snapshot().copy(files = listOf(file(path = longPath, oldPath = null))),
@@ -310,9 +310,9 @@ class PipelineTest {
                 finding(DiffSide.NEW).copy(file = longPath, explanation = "detail ".repeat(200))
             }) },
         )
-        assertFixedDiagnostic(fixture, Outcome.ERROR)
+        assertErrorWithoutComment(fixture)
         assertEquals(1, fixture.llm.attempts)
-        assertEquals(COMMENT, fixture.calls.last())
+        assertEquals(PR, fixture.calls.last())
     }
 
     @Test
@@ -358,11 +358,11 @@ class PipelineTest {
     }
 
     @Test
-    fun httpDeadlineOnModelCanPublishAFixedErrorAfterFreshRecheck() {
+    fun httpDeadlineOnModelDoesNotPublishAComment() {
         val fixture = Fixture(respond = { throw ReviewFailure(FailureReason.DEADLINE) })
-        assertFixedDiagnostic(fixture, Outcome.ERROR)
+        assertErrorWithoutComment(fixture)
         assertEquals(1, fixture.llm.attempts)
-        assertEquals(happyCalls(), fixture.calls)
+        assertEquals(happyCalls().take(7), fixture.calls)
     }
 
     @Test
@@ -412,14 +412,28 @@ class PipelineTest {
     }
 
     @Test
-    fun commentFailureIsNeverRetriedIncludingFailureOnTheDiagnosticItself() {
-        for (respond in listOf(::result, { throw ReviewFailure(FailureReason.INVALID_RESPONSE) })) {
-            val fixture = Fixture(respond = respond)
-            fixture.github.onCall = { if (it == COMMENT) throw ReviewFailure(FailureReason.HTTP) }
-            assertEquals(Outcome.ERROR, fixture.run())
-            assertEquals(happyCalls(), fixture.calls)
-            assertEquals(1, fixture.github.comments.size)
-        }
+    fun commentFailureIsNeverRetriedOrFollowedByAnErrorComment() {
+        val fixture = Fixture()
+        fixture.github.onCall = { if (it == COMMENT) throw ReviewFailure(FailureReason.HTTP) }
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertEquals(happyCalls(), fixture.calls)
+        assertEquals(1, fixture.github.comments.size)
+        assertFalse(fixture.github.comments.single() == renderComment(context(), Outcome.ERROR, null, null, null))
+    }
+
+    @Test
+    fun sourceApiErrorDoesNotRecheckOrPublishAComment() {
+        val fixture = Fixture()
+        fixture.github.onCall = { if (it == COMPARE) throw ReviewFailure(FailureReason.HTTP) }
+        assertErrorWithoutComment(fixture)
+        assertEquals(listOf(PERMISSION, PR, COMPARE), fixture.calls)
+        assertEquals(0, fixture.llm.attempts)
+    }
+
+    private fun assertErrorWithoutComment(fixture: Fixture) {
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertTrue(fixture.github.comments.isEmpty())
+        assertFalse(COMMENT in fixture.calls)
     }
 
     private fun assertFixedDiagnostic(fixture: Fixture, outcome: Outcome) {
