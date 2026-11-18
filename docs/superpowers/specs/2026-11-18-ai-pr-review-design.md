@@ -39,7 +39,7 @@ Job concurrency: `group: ai-review-pr-${{ github.event.pull_request.number }}`, 
 ## Global Constraints
 
 - Kotlin 2.2.21 / JVM 21; Gradle Wrapper 8.14.3; Spring Boot не используется.
-- JSON: kotlinx.serialization-json 1.9.0; HTTP: java.net.http.HttpClient; тесты: kotlin-test-junit5 и JUnit Jupiter 5.12.2.
+- JSON: kotlinx.serialization-json 1.9.0; HTTP: java.net.http.HttpClient; тесты: kotlin-test-junit5 и JUnit Jupiter 5.12.2. Remote JSON проходит строгую проверку raw controls/literals/duplicate keys с пределом 64 вложенных containers до tree parsing.
 - Один workflow, один job, одна CLI-программа; без сервера, БД, Actions cache, artifacts и агентных tools; временные maps metadata разрешены только в памяти одного запуска.
 - Trigger: pull_request_target / labeled / ai-review; только открытые PR, не draft; GITHUB_RUN_ATTEMPT должен быть 1.
 - Job permissions: contents: read и pull-requests: write; PAT не используется; все uses закреплены полным проверенным commit SHA; checkout ref: github.workflow_sha, path: reviewer, persist-credentials: false.
@@ -122,6 +122,7 @@ Credentials только из env разрешённого шага; отдел�
 - `src/main/kotlin/aireviewer/HttpTransport.kt` — полный HTTP deadline, bounded body, cancellation и cleanup.
 - `src/main/kotlin/aireviewer/GitHubClient.kt` — Compare и Git Data API через upstream namespace.
 - `src/main/kotlin/aireviewer/OpenAiClient.kt` — ModelProfile и Responses JSON.
+- `src/main/kotlin/aireviewer/ResponseJson.kt` — небольшой общий iterative strictness guard перед kotlinx tree parser, без новой зависимости и своего structural parser.
 - `src/main/kotlin/aireviewer/Main.kt` — конфигурация, общий budget, lifecycle и orchestration.
 - `src/main/resources/review-prompt.md` — trusted правила review.
 - `src/test/kotlin/aireviewer/{ReviewTest,SnapshotVerifierTest,HttpTransportTest,ApiClientsTest,PipelineTest}.kt` — проверки границ и corner cases.
