@@ -79,7 +79,10 @@ enum class FailureReason {
     HTTP, DEADLINE, OPENAI, INVALID_RESPONSE, CONFIG,
 }
 
-class ReviewFailure(val reason: FailureReason) : RuntimeException(reason.name)
+class ReviewFailure(
+    val reason: FailureReason,
+    val openAiError: OpenAiErrorDetails? = null,
+) : RuntimeException(reason.name)
 
 interface GitHubApi {
     fun permission(actor: String): String

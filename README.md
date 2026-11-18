@@ -38,6 +38,27 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 | REVIEWED | 0 | Опубликован проверенный результат по указанному снимку. |
 | ERROR | 1 | Сбой конфигурации, API, дедлайна, результата или публикации. Фиксированная диагностика возможна при подтверждённых правах, актуальном PR и оставшемся budget. |
 
+## Диагностика OpenAI
+
+В логах шага Run the reviewer перед итоговым `ERROR OPENAI` или `ERROR INVALID_RESPONSE` выводится строка `OPENAI_ERROR`: HTTP status, `code`, `type`, `param`, `request_id` и безопасное пояснение, если соответствующие поля доступны. Диагностика сохраняется и при ошибке последующей проверки PR или публикации комментария.
+
+~~~~text
+OPENAI_ERROR http_status=429 code=insufficient_quota type=insufficient_quota request_id=req_example: API project quota is exhausted. Check billing, credits and project spending limits.
+ERROR OPENAI
+~~~~
+
+| Причина | Что проверить |
+| --- | --- |
+| `insufficient_quota` | API billing, кредиты и spending limit проекта |
+| `rate_limit_exceeded` | Лимиты запросов и токенов; повторить Re-run позже |
+| HTTP 401 / `invalid_api_key` | Repository secret OPENAI_API_KEY и его API-проект |
+| HTTP 403 / `model_not_found` | Доступ проекта к модели из LLM_MODEL |
+| HTTP 400 / `unsupported_value`, `unsupported_parameter` | Поле `param`; например, поддержку `reasoning.effort=none` выбранной моделью |
+| `incomplete_reason=max_output_tokens` | Ответ не поместился в 6000 output tokens; частичные findings не публикуются |
+| HTTP 5xx или timeout | Доступность сервиса и сети; request_id пригодится для обращения в поддержку |
+
+При неизвестном HTTP 429 конкретная причина не угадывается. Для не-JSON ответа остаются HTTP status и безопасное пояснение. Исходные `error.message`, response body, prompt, diff и ключи не выводятся. Метаданные ограничены по длине и допустимым символам; диагностика API остаётся в логах Actions и не добавляется в публичный комментарий PR. Автоматических повторов запроса нет.
+
 ## Локальная проверка
 
 Нужна Java 21. Обычные тесты используют fake API и loopback, без API-ключей.

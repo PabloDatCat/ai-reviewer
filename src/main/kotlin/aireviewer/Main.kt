@@ -22,7 +22,11 @@ private val skippableInputFailures = setOf(
 fun runReview(ctx: RunContext, github: GitHubApi, llm: LlmReviewer, rules: String, budget: ReviewBudget): Outcome =
     ReviewRun(ctx, github, llm, rules, budget).run().outcome
 
-private data class ReviewExecution(val outcome: Outcome, val reason: FailureReason? = null)
+private data class ReviewExecution(
+    val outcome: Outcome,
+    val reason: FailureReason? = null,
+    val openAiError: OpenAiErrorDetails? = null,
+)
 
 private class ReviewRun(
     private var ctx: RunContext,
@@ -31,9 +35,11 @@ private class ReviewRun(
     private val rules: String,
     private val budget: ReviewBudget,
 ) {
+    private var openAiError: OpenAiErrorDetails? = null
+
     fun run(): ReviewExecution {
         if (ctx.runAttempt < 1) return ReviewExecution(Outcome.IGNORED)
-        return try {
+        val execution = try {
             reviewAuthorizedPullRequest()
         } catch (failure: TransportCleanupFailure) {
             throw failure
@@ -43,10 +49,12 @@ private class ReviewRun(
         } catch (_: CancellationException) {
             ReviewExecution(Outcome.ERROR, FailureReason.DEADLINE)
         } catch (failure: ReviewFailure) {
-            ReviewExecution(Outcome.ERROR, failure.reason)
+            ReviewExecution(Outcome.ERROR, failure.reason, failure.openAiError)
         } catch (_: Exception) {
             ReviewExecution(Outcome.ERROR)
         }
+        // Preserve the provider diagnosis even if the final PR check or comment POST fails.
+        return execution.copy(openAiError = openAiError ?: execution.openAiError)
     }
 
     private fun reviewAuthorizedPullRequest(): ReviewExecution {
@@ -85,6 +93,7 @@ private class ReviewRun(
             if (failure is TransportCleanupFailure || failure is InterruptedException || failure is CancellationException) {
                 throw failure
             }
+            openAiError = (failure as? ReviewFailure)?.openAiError
             val reason = (failure as? ReviewFailure)?.reason ?: FailureReason.OPENAI
             return diagnostic(original, ReviewExecution(Outcome.ERROR, reason))
         }
@@ -206,11 +215,12 @@ fun main() {
         Thread.currentThread().interrupt()
         ReviewExecution(Outcome.ERROR, FailureReason.DEADLINE)
     } catch (failure: ReviewFailure) {
-        ReviewExecution(Outcome.ERROR, failure.reason)
+        ReviewExecution(Outcome.ERROR, failure.reason, failure.openAiError)
     } catch (_: Exception) {
         ReviewExecution(Outcome.ERROR)
     }
 
+    execution.openAiError?.let { System.err.println(it.logLine()) }
     val interrupted = Thread.currentThread().isInterrupted
     if (execution.outcome == Outcome.ERROR || interrupted) {
         val reason = if (interrupted) FailureReason.DEADLINE else execution.reason

@@ -30,7 +30,7 @@
 - Каждое замечание имеет построенную reviewer ссылку через upstream repository: OLD — oldSha и старый путь, NEW — headSha и новый путь; Markdown открывается с ?plain=1 перед #L anchor; URL от модели не принимается.
 - Review categories: BUSINESS_LOGIC, BACKWARD_COMPATIBILITY, RACE_CONDITION, CONTRACT_VIOLATION, ERROR_HANDLING; FORMAT/CODE_STYLE/NAMING/MISSING_TESTS/GENERAL_REFACTORING исключены.
 - Каждый сценарий сбоя обязан быть реалистичным: достижимые предпосылки, конкретный путь выполнения и наблюдаемое последствие; без выдуманных контрактов, конфигураций и противоречащих коду условий. При недостатке оснований замечание не публикуется; редкий, но правдоподобный отказ не исключается только из-за редкости.
-- Секрет OPENAI_API_KEY принадлежит корпоративному API-проекту; логи без credentials, diff, prompt и API-body; общий комментарий не длиннее 12 000 символов. Все пределы в символах считаются по Unicode code points, согласованно с JSON Schema; byte limits остаются байтовыми.
+- Секрет OPENAI_API_KEY принадлежит корпоративному API-проекту; логи без credentials, diff, prompt и raw API-body; ошибки OpenAI допускают ограниченные HTTP status/code/type/param/request ID и фиксированное безопасное пояснение, без исходного error.message; общий комментарий не длиннее 12 000 символов. Все пределы в символах считаются по Unicode code points, согласованно с JSON Schema; byte limits остаются байтовыми.
 
 ## Review Focus
 
@@ -166,7 +166,7 @@ data class HttpReply(val status: Int, val body: String,
 
 ## Task 3: Coherent GitHub API и фиксированный ModelProfile
 
-**Files:** Create `src/main/kotlin/aireviewer/GitHubClient.kt`, `src/main/kotlin/aireviewer/OpenAiClient.kt`, `src/main/kotlin/aireviewer/ResponseJson.kt`, `src/main/resources/review-prompt.md`, `src/test/kotlin/aireviewer/ApiClientsTest.kt`.
+**Files:** Create `src/main/kotlin/aireviewer/GitHubClient.kt`, `src/main/kotlin/aireviewer/OpenAiClient.kt`, `src/main/kotlin/aireviewer/OpenAiError.kt`, `src/main/kotlin/aireviewer/ResponseJson.kt`, `src/main/resources/review-prompt.md`, `src/test/kotlin/aireviewer/ApiClientsTest.kt`.
 
 **Interfaces:** Consumes: модели/порты Task 1 и transport Task 2. Produces: `GitHubClient(repo: String, token: String, transport: HttpTransport) : GitHubApi`; `data class ModelProfile(val model: String, val reasoningEffort: String, val maxOutputTokens: Int)` и `fun configuredProfile(model: String): ModelProfile`; `OpenAiClient(apiKey: String, profile: ModelProfile, transport: HttpTransport) : LlmReviewer`. ModelProfile и configuredProfile располагаются в OpenAiClient.kt.
 
@@ -186,7 +186,7 @@ data class HttpReply(val status: Int, val body: String,
   | oneModelRequest | ровно один POST responses, model snapshot, reasoning.effort=none, max_output_tokens=6000, store=false, strict schema, без tools/background/SSE |
   | safeIncomplete | incomplete с reason=max_output_tokens и даже частичным output_text → INVALID_RESPONSE, без retry и частичного findings |
   | finalResponseSelection | reasoning metadata + completed commentary + unique completed final_answer принимается; единственное unphased final совместимо; commentary-only JSON/refusal/tool/incomplete/unknown phase/competing finals отвергаются |
-  | invalidOutput | refusal, malformed JSON, unknown properties/category, fake file/line, 429/5xx → фиксированная ошибка без raw payload/ключей |
+  | invalidOutput | refusal, malformed JSON, unknown properties/category, fake file/line, 429/5xx → безопасная диагностика status/code/type/param/request ID с пояснением без raw payload/error.message/ключей |
   | strictResponseJson | raw C0/newline в string, invalid bare literal, duplicate keys (также escaped canonical key), depth65/2000 отвергаются до tree parsing; depth64 и законные escaped text/Unicode проходят; duplicate findings не даёт clean [] |
 
   Дополнительно проверить request timeout 15/60 секунд, раздельные Authorization credentials и отсутствие fake API-key в prompt. По source kinds tests fixtures отражают Git modes, не поведение Contents API, которое может следовать symlink.

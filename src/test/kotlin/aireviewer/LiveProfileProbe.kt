@@ -191,6 +191,7 @@ object LiveProfileProbe {
             println("status=ERROR reason=TRANSPORT_CLEANUP")
             1
         } catch (failure: ReviewFailure) {
+            failure.openAiError?.let { println(it.logLine()) }
             println("status=ERROR reason=${failure.reason.name}")
             1
         } catch (_: Exception) {
@@ -233,6 +234,7 @@ private fun runProbe(args: Array<String>): Int {
                 client.review(diff, rules)
             } catch (failure: ReviewFailure) {
                 reportCase(case.name, "ERROR", started, observed.usage, reason = failure.reason.name)
+                failure.openAiError?.let { println(it.logLine()) }
                 return 1
             } catch (failure: TransportCleanupFailure) {
                 canClose = false

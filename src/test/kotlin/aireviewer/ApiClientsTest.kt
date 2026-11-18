@@ -575,6 +575,90 @@ class ApiClientsTest {
         assertTrue(transport.requests.isEmpty())
     }
 
+    @Test
+    fun openAiHttpErrorsExplainQuotaRateLimitAuthenticationAndModelParameters() {
+        val cases = listOf(
+            Triple(429, "insufficient_quota", "quota is exhausted"),
+            Triple(429, "rate_limit_exceeded", "rate limit exceeded"),
+            Triple(401, "invalid_api_key", "Authentication failed"),
+            Triple(404, "model_not_found", "model is unavailable"),
+            Triple(400, "unsupported_value", "reasoning.effort"),
+        )
+        for ((status, code, expected) in cases) {
+            val body = """{"error":{"code":"$code","type":"invalid_request_error",
+                "param":"reasoning.effort","message":"$OPENAI_KEY $RAW_MARKER"}}"""
+            val transport = modelResponse(body, status, mapOf("X-Request-ID" to listOf("req_example")))
+            val failure = assertFailsWith<ReviewFailure> { model(transport).review(diff(), RULES) }
+            assertEquals(FailureReason.OPENAI, failure.reason)
+            val details = checkNotNull(failure.openAiError)
+            assertEquals(status, details.httpStatus)
+            assertEquals(code, details.code)
+            assertEquals("invalid_request_error", details.type)
+            assertEquals("reasoning.effort", details.parameter)
+            assertEquals("req_example", details.requestId)
+            val line = details.logLine()
+            assertTrue(expected in line)
+            assertFalse(OPENAI_KEY in line || RAW_MARKER in line)
+            assertEquals("OPENAI", failure.message)
+            assertEquals(1, transport.requests.size)
+        }
+    }
+
+    @Test
+    fun openAiDiagnosticsDoNotEchoUnsafeMetadataOrNonJsonBodies() {
+        val body = """{"error":{"code":${JsonPrimitive(OPENAI_KEY)},
+            "type":"::error:: $RAW_MARKER","param":"input\n::error::leak",
+            "message":"$OPENAI_KEY $RAW_MARKER"}}"""
+        val transport = modelResponse(body, 401, mapOf("x-request-id" to listOf(OPENAI_KEY)))
+        val failure = assertFailsWith<ReviewFailure> { model(transport).review(diff(), RULES) }
+        val details = checkNotNull(failure.openAiError)
+        assertNull(details.code)
+        assertNull(details.type)
+        assertNull(details.parameter)
+        assertNull(details.requestId)
+        assertFalse(OPENAI_KEY in details.logLine() || RAW_MARKER in details.logLine())
+        assertFalse("::error::" in details.logLine())
+
+        val nonJson = modelResponse("<html>$OPENAI_KEY $RAW_MARKER</html>", 503)
+        val serverFailure = assertFailsWith<ReviewFailure> { model(nonJson).review(diff(), RULES) }
+        val line = checkNotNull(serverFailure.openAiError).logLine()
+        assertTrue("http_status=503" in line && "service error" in line)
+        assertFalse(OPENAI_KEY in line || RAW_MARKER in line)
+    }
+
+    @Test
+    fun incompleteAndMalformedOpenAiResponsesHaveSafeDiagnostics() {
+        val incomplete = modelResponse("""{"status":"incomplete",
+            "incomplete_details":{"reason":"max_output_tokens"},"output":[]}""")
+        val failure = assertFailsWith<ReviewFailure> { model(incomplete).review(diff(), RULES) }
+        assertEquals(FailureReason.INVALID_RESPONSE, failure.reason)
+        val details = checkNotNull(failure.openAiError)
+        assertEquals("incomplete", details.responseStatus)
+        assertEquals("max_output_tokens", details.incompleteReason)
+        assertTrue("max_output_tokens=6000" in details.explanation)
+
+        val malformed = modelResponse(RAW_MARKER)
+        val invalid = assertFailsWith<ReviewFailure> { model(malformed).review(diff(), RULES) }
+        assertEquals(FailureReason.INVALID_RESPONSE, invalid.reason)
+        assertTrue("malformed JSON" in checkNotNull(invalid.openAiError).explanation)
+        assertFalse(RAW_MARKER in checkNotNull(invalid.openAiError).logLine())
+    }
+
+    @Test
+    fun openAiTransportTimeoutPreservesReasonAndExplainsTheExchangeLimit() {
+        var attempts = 0
+        val client = OpenAiClient(OPENAI_KEY, configuredProfile(MODEL), HttpTransport {
+            attempts++
+            throw ReviewFailure(FailureReason.DEADLINE)
+        })
+        val failure = assertFailsWith<ReviewFailure> { client.review(diff(), RULES) }
+        assertEquals(FailureReason.DEADLINE, failure.reason)
+        val details = checkNotNull(failure.openAiError)
+        assertNull(details.httpStatus)
+        assertTrue("60 seconds" in details.explanation)
+        assertEquals(1, attempts)
+    }
+
     private fun sourceFixture(
         commit: HttpReply = HttpReply(200, commitJson(OLD, TREE)),
         tree: HttpReply = HttpReply(200, treeJson(TREE, listOf(entryJson("a.kt", "100644", "blob")))),
@@ -607,8 +691,8 @@ class ApiClientsTest {
 
     private fun github(transport: RecordingTransport) = GitHubClient(REPO, GITHUB_TOKEN, transport)
     private fun model(transport: RecordingTransport) = OpenAiClient(OPENAI_KEY, configuredProfile(MODEL), transport)
-    private fun modelResponse(body: String, status: Int = 200) =
-        RecordingTransport("POST /v1/responses" to HttpReply(status, body))
+    private fun modelResponse(body: String, status: Int = 200, headers: Map<String, List<String>> = emptyMap()) =
+        RecordingTransport("POST /v1/responses" to HttpReply(status, body, headers))
 
     private fun diff() = prepareDiff(listOf(ChangedFile("a.kt", PATCH, additions = 1, deletions = 1)))
 

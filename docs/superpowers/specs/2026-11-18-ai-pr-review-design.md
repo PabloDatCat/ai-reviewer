@@ -56,7 +56,7 @@ Job concurrency: `group: ai-review-pr-${{ github.event.pull_request.number }}`, 
 - Каждое замечание имеет построенную reviewer ссылку через upstream repository: OLD — oldSha и старый путь, NEW — headSha и новый путь; Markdown открывается с ?plain=1 перед #L anchor; URL от модели не принимается.
 - Review categories: BUSINESS_LOGIC, BACKWARD_COMPATIBILITY, RACE_CONDITION, CONTRACT_VIOLATION, ERROR_HANDLING; FORMAT/CODE_STYLE/NAMING/MISSING_TESTS/GENERAL_REFACTORING исключены.
 - Каждый сценарий сбоя обязан быть реалистичным: достижимые предпосылки, конкретный путь выполнения и наблюдаемое последствие; без выдуманных контрактов, конфигураций и противоречащих коду условий. При недостатке оснований замечание не публикуется; редкий, но правдоподобный отказ не исключается только из-за редкости.
-- Секрет OPENAI_API_KEY принадлежит корпоративному API-проекту; логи без credentials, diff, prompt и API-body; общий комментарий не длиннее 12 000 символов. Все пределы в символах считаются по Unicode code points, согласованно с JSON Schema; byte limits остаются байтовыми.
+- Секрет OPENAI_API_KEY принадлежит корпоративному API-проекту; логи без credentials, diff, prompt и raw API-body; ошибки OpenAI допускают ограниченные HTTP status/code/type/param/request ID и фиксированное безопасное пояснение, без исходного error.message; общий комментарий не длиннее 12 000 символов. Все пределы в символах считаются по Unicode code points, согласованно с JSON Schema; byte limits остаются байтовыми.
 
 ## Согласованный DiffSnapshot
 
@@ -94,6 +94,8 @@ Finding содержит file, side, startLine/endLine, category, severity, titl
 Strict JSON schema и локальная валидация отвергают неизвестные поля/categories/files, отсутствующие/ложные координаты, refusal, incomplete и неверные размеры. Текст модели помещается в fenced code blocks с заменой backticks, '@' и управляющих символов; reviewer добавляет собственные ссылки снаружи. При body >12 000 символов — фиксированный ERROR вместо обрезания findings. Успех содержит source=COMPARE, base/head/old SHA, число файлов и ограничение «проверены доступные patches; тесты не запускались». Пустой findings — «В переданном diff существенных проблем не обнаружено» с тем же покрытием.
 
 ## Профиль OpenAI
+
+Ошибки OpenAI передаются в CLI как структурированная безопасная диагностика вместе с FailureReason. HTTP status, машинные code/type/param, request ID и status/incomplete reason ограничиваются по длине и допустимым символам; исходный error.message не публикуется. CLI пишет пояснение причины в Actions log, сохраняя его при сбое следующего PR recheck/POST. Timeout, malformed JSON и невалидный output получают контекст OpenAI; сам PR-комментарий остаётся фиксированным.
 
 Имя модели передаётся в OpenAI из обязательной переменной `LLM_MODEL` без сверки с фиксированным именем, snapshot или allowlist. Пустое значение отклоняется как CONFIG до сетевых запросов. Модель выбирается через GitHub repository variable; изменения кода для её смены не нужны. Запрос сохраняет `reasoning: { effort: "none" }`, `max_output_tokens: 6000`, `store: false` и text.format strict JSON schema, без tools, background и SSE. Выбранная модель должна поддерживать Responses API и эти параметры. Значения не принимаются из содержимого PR.
 

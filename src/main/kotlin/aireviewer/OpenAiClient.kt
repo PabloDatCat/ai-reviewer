@@ -23,7 +23,7 @@ fun configuredProfile(model: String): ModelProfile {
 }
 
 class OpenAiClient(
-    apiKey: String,
+    private val apiKey: String,
     private val profile: ModelProfile,
     private val transport: HttpTransport,
 ) : LlmReviewer {
@@ -50,10 +50,26 @@ class OpenAiClient(
             .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
             .build()
 
-        val reply = transport.send(request)
-        if (reply.status != 200) throw ReviewFailure(FailureReason.OPENAI)
-        val response = parseResponseObject(reply.body, INVALID_RESPONSE)
-        return validateResult(parseResult(completedOutput(response)), diff)
+        val reply = try {
+            transport.send(request)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiTransportError(failure.reason))
+        }
+        if (reply.status != 200) {
+            throw ReviewFailure(FailureReason.OPENAI, openAiErrorDetails(reply, apiKey))
+        }
+        val response = try {
+            parseResponseObject(reply.body, INVALID_RESPONSE)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiErrorDetails(reply, apiKey,
+                fallback = "OpenAI returned malformed JSON instead of a valid Responses API envelope."))
+        }
+        return try {
+            validateResult(parseResult(completedOutput(response)), diff)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiErrorDetails(reply, apiKey, response,
+                fallback = "The response failed output validation. Check model Structured Outputs support, completed output and finding coordinates."))
+        }
     }
 }
 
