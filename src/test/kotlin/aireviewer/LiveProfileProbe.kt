@@ -67,18 +67,26 @@ internal data class ProfileChange(
 
 internal fun profileCases(): List<ProfileCase> {
     val styleBefore = """
-        fun canShip(units: Int): Boolean {
-            val positive = units > 0
-            return positive
+        class ShippingPrice {
+            fun feeCents(orderCents: Int): Int {
+                require(orderCents >= 0)
+                return if (qualifiesForFreeShipping(orderCents)) 0 else 499
+            }
+            // Orders of at least 5,000 cents must ship free.
+            private fun qualifiesForFreeShipping(orderCents: Int): Boolean = orderCents >= 5_000
         }
     """.trimIndent()
     val styleAfter = """
-        private fun hasStock(quantity: Int) = quantity > 0
-
-        fun canShip(units: Int): Boolean =
-            hasStock(units)
+        class ShippingPrice {
+            fun feeCents(orderCents: Int): Int {
+                require(orderCents >= 0)
+                return  if( has_Free_Shipping(orderCents) ) 0  else 499
+            }
+            // Orders of at least 5,000 cents must ship free.
+            private fun has_Free_Shipping(orderCents: Int): Boolean = orderCents >= 5_000
+        }
     """.trimIndent()
-    val style = ProfileCase("style-only", listOf(ProfileChange("Stock.kt", styleBefore.lines(), styleAfter.lines())))
+    val style = ProfileCase("style-only", listOf(ProfileChange("ShippingPrice.kt", styleBefore.lines(), styleAfter.lines())))
 
     val shipping = changed(
         "Shipping.kt", ReviewCategory.BUSINESS_LOGIC, """
