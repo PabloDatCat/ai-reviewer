@@ -35,4 +35,6 @@ bin/
 /.gradle/
 /.gradle-user-home/
 /build/
-/.env
+
+.env
+.env.*

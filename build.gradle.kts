@@ -21,10 +21,14 @@ kotlin {
     jvmToolchain(21)
 }
 
+val singleHttpAttempt = "-Djdk.httpclient.redirects.retrylimit=1"
+
 application {
     mainClass = "aireviewer.MainKt"
+    applicationDefaultJvmArgs = listOf(singleHttpAttempt)
 }
 
 tasks.test {
     useJUnitPlatform()
+    jvmArgs(singleHttpAttempt)
 }

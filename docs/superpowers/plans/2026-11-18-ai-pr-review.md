@@ -20,7 +20,7 @@
 - Ни код, ни Gradle Wrapper, ни prompt, ни конфигурация из PR не исполняются и не используются как доверенные настройки; subprocess для содержимого PR запрещён.
 - DiffSnapshot: merge-base и patches из одного ответа Compare API для зафиксированных base/head SHA; PR files API не используется; OLD/NEW текст всех представленных строк сверяется с Git blobs до вызова OpenAI. Обязательные per-file additions/deletions из того же ответа сверяются с числом операций patch; неизвестные totals не подменяются вычисленными.
 - GitHub API origin: https://api.github.com; OpenAI endpoint: https://api.openai.com/v1/responses; redirects запрещены; URL из API-body, PR или модели не открываются.
-- Deadline всего HTTP-обмена, включая body: GitHub 15 секунд, OpenAI 60 секунд; минимум с оставшимся CLI budget; каждый body не более 1 MiB; автоматические повторы отключены.
+- Deadline всего HTTP-обмена, включая body: GitHub 15 секунд, OpenAI 60 секунд; минимум с оставшимся CLI budget; каждый body не более 1 MiB; автоматические повторы отключены. JVM запускается с -Djdk.httpclient.redirects.retrylimit=1 до инициализации HttpClient, чтобы ограничить и внутренние попытки JDK.
 - При deadline отменяются задача и чтение, закрывается stream; исключены зависший reader и гонка timeout с получением stream; cleanup ограничен 1 секундой, при его неуспехе CLI аварийно завершается без следующих запросов.
 - Job timeout-minutes: 15, включая checkout и сборку, без времени ожидания очереди; CLI deadline: 14 минут с начала процесса по System.nanoTime.
 - Concurrency: job-группа ai-review-pr-${{ github.event.pull_request.number }}, cancel-in-progress: false, queue: max; максимум одно активное ревью на один PR/MR, разные PR могут проверяться параллельно.
@@ -135,7 +135,7 @@ data class HttpReply(val status: Int, val body: String,
 
 ## Task 2: Полный HTTP deadline и lifecycle
 
-**Files:** Create `src/main/kotlin/aireviewer/HttpTransport.kt`, `src/test/kotlin/aireviewer/HttpTransportTest.kt`.
+**Files:** Create `src/main/kotlin/aireviewer/HttpTransport.kt`, `src/test/kotlin/aireviewer/HttpTransportTest.kt`; Modify `build.gradle.kts` (startup flag полного запрета повторных попыток JDK).
 
 **Interfaces:** Consumes: HttpTransport/HttpReply/ReviewFailure из Task 1. Produces: `class ReviewBudget(deadlineNanos: Long, nanoTime: () -> Long = System::nanoTime)` с `fun remaining(): java.time.Duration` (DEADLINE при исчерпании); `class DeadlineHttpTransport internal constructor(client: java.net.http.HttpClient, budget: ReviewBudget, allowedOrigins: Set<java.net.URI>) : HttpTransport, AutoCloseable`; `fun defaultTransport(budget: ReviewBudget): DeadlineHttpTransport` с production origins только api.github.com/api.openai.com и Redirect.NEVER. `class TransportCleanupFailure : RuntimeException` сигнализирует Main, что продолжать запросы нельзя.
 
@@ -150,6 +150,7 @@ data class HttpReply(val status: Int, val body: String,
   | completionRacesDeadline | Barrier управляет EOF/timeout | один итог; нет опубликованного успеха после deadline и оставшегося timer/reader |
   | boundedBody | 1 MiB и 1 MiB+1 | первый проходит, второй безопасно отклонён и закрыт |
   | redirectsBlocked | 302 на другой loopback endpoint | target получает ноль запросов, credentials не пересылаются |
+  | clientAttemptsBounded | fresh JVM с startup flag, сервер принял и оборвал запрос | фактически не более одной попытки HTTP, не только один вызов transport.send |
   | interruptedCaller | caller interrupt при read | interrupt не теряется, exchange отменён, новых запросов нет |
   | remainingReviewBudget | общий budget 100 ms, request timeout 15 s | обмен ограничен остатком 100 ms, а не 15 s |
   | cleanupFailureStopsClient | controlled worker не завершился в grace | TransportCleanupFailure; следующий send не выполняется |
@@ -157,7 +158,7 @@ data class HttpReply(val status: Int, val body: String,
 
   Размерные/дедлайновые тесты используют управляемые barriers/latches и малые durations, не реальные 15/60 секунд. Реальный сетевой тест deadline допускает scheduling tolerance до cleanup grace 1 секунды. Для late-stream/close races helper ControlledHttpClient реализует JDK HttpClient с управляемыми response/stream и передаётся в существующий constructor; production алгоритм registration тот же, нового runtime API для PR не появляется. Проверять фактическое завершение reader tasks после cleanup, а не только isDone отменённого Future. Helpers отпускают тестовые barriers в finally, включая intentionally blocked cleanup.
 - [ ] **Step 2: Запустить `./gradlew test --tests aireviewer.HttpTransportTest`.** Ожидается FAIL до появления transport.
-- [ ] **Step 3: Реализовать ReviewBudget и transport.** Создавать абсолютный deadline до submit; min(request.timeout, budget.remaining). Worker охватывает send, чтение максимум 1 MiB+1 и finally-close. Согласовать cancellation flag и публикацию stream так, чтобы late stream закрывался и не читался. Timeout отменяет worker с interrupt и закрывает stream; не ограничиваться Future.get timeout/orTimeout без отмены чтения. До возврата результата проверить, что deadline не истёк. Не сбрасывать таймер на chunk. Таймеры удалять после completion; close transport завершает executor. Cleanup >1 секунды → fatal TransportCleanupFailure; Main завершает процесс, не пытаясь отправить ERROR-комментарий. Ошибки содержат только safe reason/status.
+- [ ] **Step 3: Реализовать ReviewBudget и transport.** Создавать абсолютный deadline до submit; min(request.timeout, budget.remaining). Worker охватывает send, чтение максимум 1 MiB+1 и finally-close. Согласовать cancellation flag и публикацию stream так, чтобы late stream закрывался и не читался. Timeout отменяет worker с interrupt и закрывает stream; не ограничиваться Future.get timeout/orTimeout без отмены чтения. До возврата результата проверить, что deadline не истёк. Не сбрасывать таймер на chunk. Таймеры удалять после completion; close transport завершает executor. Cleanup >1 секунды → fatal TransportCleanupFailure; Main завершает процесс, не пытаясь отправить ERROR-комментарий. Ошибки содержат только safe reason/status. В applicationDefaultJvmArgs и test JVM добавить -Djdk.httpclient.redirects.retrylimit=1 до старта процесса; defensive установка в defaultTransport не заменяет startup flag. Проверить реальное число сетевых попыток, а не только значение property.
 
   Shutdown/close тоже bounded: не выполнять потенциально блокирующий close на caller и не использовать бесконечные ExecutorService.close/HttpClient.close/join. Cancellation и shutdownNow + конечный await должны укладываться в cleanup grace; незавершённый worker/close → fatal. Main после fatal не повторяет неблокирующий по предположению, но фактически бесконечный cleanup в finally.
 - [ ] **Step 4: Повторить тесты Task 2.** Ожидается BUILD SUCCESSFUL, server/thread resources завершены.
