@@ -31,20 +31,60 @@ class PipelineTest {
     }
 
     @Test
-    fun rerunOrWrongEventIsIgnoredBeforeNetworkOrEventRead() {
+    fun invalidAttemptOrWrongEventIsIgnoredBeforeNetworkOrEventRead() {
         val fixture = Fixture()
-        assertEquals(Outcome.IGNORED, fixture.run(context().copy(runAttempt = 2)))
+        assertEquals(Outcome.IGNORED, fixture.run(context().copy(runAttempt = 0)))
         assertTrue(fixture.calls.isEmpty())
 
         for (env in listOf(
             mapOf("GITHUB_EVENT_NAME" to "pull_request", "GITHUB_RUN_ATTEMPT" to "1"),
-            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "2"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "0"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "-1"),
+            mapOf("GITHUB_EVENT_NAME" to "pull_request_target", "GITHUB_RUN_ATTEMPT" to "invalid"),
         )) {
             assertNull(loadRunContext(
                 env = { env.getValue(it) },
                 readEvent = { error("An ineligible trigger should not read the event file") },
             ))
         }
+    }
+
+    @Test
+    fun manualRerunLoadsTheEventAndRepeatsReviewOnTheSamePr() {
+        val env = mapOf(
+            "GITHUB_EVENT_NAME" to "pull_request_target",
+            "GITHUB_RUN_ATTEMPT" to "2",
+            "GITHUB_REPOSITORY" to REPO,
+            "GITHUB_ACTOR" to ACTOR,
+            "GITHUB_EVENT_PATH" to "/fake/github-event.json",
+        )
+        val ctx = checkNotNull(loadRunContext(env = env::get, readEvent = { event("labeled") }))
+        assertEquals(context().copy(runAttempt = 2), ctx)
+        val fixture = Fixture(states = List(6) { state() })
+        assertEquals(Outcome.REVIEWED, fixture.run())
+        assertEquals(Outcome.REVIEWED, fixture.run(ctx))
+        assertEquals(2, fixture.llm.attempts)
+        assertEquals(2, fixture.github.comments.size)
+        assertEquals(happyCalls() + happyCalls(), fixture.calls)
+    }
+
+    @Test
+    fun manualRerunReviewsCurrentPrIdentityAfterPushOrRetarget() {
+        val newHead = "e".repeat(40)
+        val current = state().copy(baseSha = DIFFERENT, headSha = newHead,
+            baseRef = "release", headRef = "fork/revised")
+        val fixture = Fixture(
+            states = List(3) { current },
+            snapshot = snapshot().copy(baseSha = DIFFERENT, headSha = newHead),
+            sources = sources().mapKeys { (key, _) -> if (key.first == HEAD) newHead to key.second else key },
+        )
+        assertEquals(Outcome.REVIEWED, fixture.run(context().copy(runAttempt = 2)))
+        assertEquals(1, fixture.llm.attempts)
+        assertTrue("compare:$DIFFERENT...$newHead" in fixture.calls)
+        assertFalse(COMPARE in fixture.calls)
+        val comment = fixture.github.comments.single()
+        assertTrue("head `$newHead`" in comment)
+        assertTrue("base `$DIFFERENT`" in comment)
     }
 
     @Test
@@ -242,26 +282,26 @@ class PipelineTest {
         )
         for (respond in failures) {
             val fixture = Fixture(respond = respond)
-            assertFixedDiagnostic(fixture, Outcome.ERROR)
+            assertErrorWithoutComment(fixture)
             assertEquals(1, fixture.llm.attempts)
-            assertEquals(happyCalls(), fixture.calls)
+            assertEquals(happyCalls().take(7), fixture.calls)
         }
     }
 
     @Test
-    fun modelFailureStillRechecksStateAndSuppressesDiagnosticsIfStale() {
+    fun modelFailureStopsWithoutAStateRecheckOrComment() {
         val fixture = Fixture(
             states = listOf(state(), state(), state().copy(headRepo = null)),
             respond = { throw ReviewFailure(FailureReason.INVALID_RESPONSE) },
         )
-        assertEquals(Outcome.STALE, fixture.run())
-        assertEquals(happyCalls().dropLast(1), fixture.calls)
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertEquals(happyCalls().take(7), fixture.calls)
         assertEquals(1, fixture.llm.attempts)
         assertTrue(fixture.github.comments.isEmpty())
     }
 
     @Test
-    fun rendererOverflowPostsOnlyTheCanonicalErrorAndReturnsError() {
+    fun rendererOverflowReturnsErrorWithoutPosting() {
         val longPath = "ë".repeat(700) + ".kt"
         val fixture = Fixture(
             snapshot = snapshot().copy(files = listOf(file(path = longPath, oldPath = null))),
@@ -270,9 +310,9 @@ class PipelineTest {
                 finding(DiffSide.NEW).copy(file = longPath, explanation = "detail ".repeat(200))
             }) },
         )
-        assertFixedDiagnostic(fixture, Outcome.ERROR)
+        assertErrorWithoutComment(fixture)
         assertEquals(1, fixture.llm.attempts)
-        assertEquals(COMMENT, fixture.calls.last())
+        assertEquals(PR, fixture.calls.last())
     }
 
     @Test
@@ -318,11 +358,11 @@ class PipelineTest {
     }
 
     @Test
-    fun httpDeadlineOnModelCanPublishAFixedErrorAfterFreshRecheck() {
+    fun httpDeadlineOnModelDoesNotPublishAComment() {
         val fixture = Fixture(respond = { throw ReviewFailure(FailureReason.DEADLINE) })
-        assertFixedDiagnostic(fixture, Outcome.ERROR)
+        assertErrorWithoutComment(fixture)
         assertEquals(1, fixture.llm.attempts)
-        assertEquals(happyCalls(), fixture.calls)
+        assertEquals(happyCalls().take(7), fixture.calls)
     }
 
     @Test
@@ -372,14 +412,28 @@ class PipelineTest {
     }
 
     @Test
-    fun commentFailureIsNeverRetriedIncludingFailureOnTheDiagnosticItself() {
-        for (respond in listOf(::result, { throw ReviewFailure(FailureReason.INVALID_RESPONSE) })) {
-            val fixture = Fixture(respond = respond)
-            fixture.github.onCall = { if (it == COMMENT) throw ReviewFailure(FailureReason.HTTP) }
-            assertEquals(Outcome.ERROR, fixture.run())
-            assertEquals(happyCalls(), fixture.calls)
-            assertEquals(1, fixture.github.comments.size)
-        }
+    fun commentFailureIsNeverRetriedOrFollowedByAnErrorComment() {
+        val fixture = Fixture()
+        fixture.github.onCall = { if (it == COMMENT) throw ReviewFailure(FailureReason.HTTP) }
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertEquals(happyCalls(), fixture.calls)
+        assertEquals(1, fixture.github.comments.size)
+        assertFalse(fixture.github.comments.single() == renderComment(context(), Outcome.ERROR, null, null, null))
+    }
+
+    @Test
+    fun sourceApiErrorDoesNotRecheckOrPublishAComment() {
+        val fixture = Fixture()
+        fixture.github.onCall = { if (it == COMPARE) throw ReviewFailure(FailureReason.HTTP) }
+        assertErrorWithoutComment(fixture)
+        assertEquals(listOf(PERMISSION, PR, COMPARE), fixture.calls)
+        assertEquals(0, fixture.llm.attempts)
+    }
+
+    private fun assertErrorWithoutComment(fixture: Fixture) {
+        assertEquals(Outcome.ERROR, fixture.run())
+        assertTrue(fixture.github.comments.isEmpty())
+        assertFalse(COMMENT in fixture.calls)
     }
 
     private fun assertFixedDiagnostic(fixture: Fixture, outcome: Outcome) {

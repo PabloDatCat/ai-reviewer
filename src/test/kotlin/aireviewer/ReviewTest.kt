@@ -38,7 +38,18 @@ class ReviewTest {
         for (ineligible in invalid) {
             assertNull(parseContext(ineligible, REPO, "reviewer", 1), ineligible)
         }
-        assertNull(parseContext(event(), REPO, "reviewer", 2))
+        assertNull(parseContext(event(), REPO, "reviewer", 0))
+        assertNull(parseContext(event(), REPO, "reviewer", -1))
+    }
+
+    @Test
+    fun contextGateAcceptsManualReruns() {
+        for (attempt in listOf(2, 3)) {
+            assertEquals(
+                RunContext(REPO, 42, "reviewer", BASE, HEAD, "main", "fork/work", attempt),
+                parseContext(event(), REPO, "reviewer", attempt),
+            )
+        }
     }
 
     @Test
