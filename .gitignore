@@ -38,3 +38,5 @@ bin/
 
 .env
 .env.*
+/.idea/
+/AI-reviewer.iml
