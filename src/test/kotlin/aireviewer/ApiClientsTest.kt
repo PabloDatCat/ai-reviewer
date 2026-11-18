@@ -321,15 +321,17 @@ class ApiClientsTest {
     }
 
     @Test
-    fun fixedProfileRejectsAliasesAndArbitraryConstructorValuesBeforeNetwork() {
-        val supported = ModelProfile(MODEL, "none", 6_000)
-        assertEquals(supported, supportedProfile(MODEL))
-        for (unsupported in listOf("gpt-5.4", "gpt-5.4-2026-03-04", " $MODEL", "")) {
-            assertFailure(FailureReason.CONFIG) { supportedProfile(unsupported) }
+    fun configuredProfileAcceptsModelNamesAndRejectsBlankConfigurationBeforeNetwork() {
+        for (name in listOf(MODEL, "model-alias", "ft:custom-model:team:reviewer:example")) {
+            assertEquals(ModelProfile(name, "none", 6_000), configuredProfile(name))
+        }
+        for (blank in listOf("", " ", "\t\n")) {
+            assertFailure(FailureReason.CONFIG) { configuredProfile(blank) }
         }
         val transport = RecordingTransport()
+        val configured = configuredProfile(MODEL)
         for (profile in listOf(
-            supported.copy(model = "gpt-5.4"), supported.copy(reasoningEffort = "low"), supported.copy(maxOutputTokens = 2_000),
+            configured.copy(reasoningEffort = "low"), configured.copy(maxOutputTokens = 2_000),
         )) {
             assertFailure(FailureReason.CONFIG) { OpenAiClient(OPENAI_KEY, profile, transport).review(diff(), RULES) }
         }
@@ -337,7 +339,16 @@ class ApiClientsTest {
     }
 
     @Test
-    fun oneModelRequestUsesFixedProfileStrictSchemaAndSeparateTrustedInstructions() {
+    fun modelFromConfigurationIsForwardedWithoutAnAllowlist() {
+        val name = "model-selected-in-LLM_MODEL"
+        val transport = modelResponse(completed())
+        OpenAiClient(OPENAI_KEY, configuredProfile(name), transport).review(diff(), RULES)
+        val payload = Json.parseToJsonElement(transport.requests.single().bodyText()).jsonObject
+        assertEquals(JsonPrimitive(name), payload.getValue("model"))
+    }
+
+    @Test
+    fun oneModelRequestUsesConfiguredModelStrictSchemaAndSeparateTrustedInstructions() {
         val transport = modelResponse(completed())
         val diff = diff()
         val rules = checkNotNull(javaClass.getResourceAsStream("/review-prompt.md")).bufferedReader().use { it.readText() }
@@ -560,7 +571,7 @@ class ApiClientsTest {
         val invalid = "$RAW_MARKER\r\ninvalid"
         val transport = RecordingTransport()
         assertFailure(FailureReason.CONFIG) { GitHubClient(REPO, invalid, transport).permission("dev") }
-        assertFailure(FailureReason.CONFIG) { OpenAiClient(invalid, supportedProfile(MODEL), transport).review(diff(), RULES) }
+        assertFailure(FailureReason.CONFIG) { OpenAiClient(invalid, configuredProfile(MODEL), transport).review(diff(), RULES) }
         assertTrue(transport.requests.isEmpty())
     }
 
@@ -595,7 +606,7 @@ class ApiClientsTest {
     }
 
     private fun github(transport: RecordingTransport) = GitHubClient(REPO, GITHUB_TOKEN, transport)
-    private fun model(transport: RecordingTransport) = OpenAiClient(OPENAI_KEY, supportedProfile(MODEL), transport)
+    private fun model(transport: RecordingTransport) = OpenAiClient(OPENAI_KEY, configuredProfile(MODEL), transport)
     private fun modelResponse(body: String, status: Int = 200) =
         RecordingTransport("POST /v1/responses" to HttpReply(status, body))
 
@@ -647,7 +658,7 @@ class ApiClientsTest {
         const val OPENAI_KEY = "fake-openai-key"
         const val RAW_MARKER = "private-response-marker"
         const val RULES = "Trusted instructions from the reviewer"
-        const val MODEL = "gpt-5.4-2026-03-05"
+        const val MODEL = "fixture-model"
         const val PATCH = "@@ -1 +1 @@\n-old\n+new"
         val BASE = "a".repeat(40)
         val HEAD = "b".repeat(40)

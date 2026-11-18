@@ -6,7 +6,6 @@ import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 import kotlinx.serialization.json.JsonObject
 
-private const val PROFILE_MODEL = "gpt-5.4-2026-03-05"
 private val OLD_SHA = "c".repeat(40)
 
 internal val profileProbeContext = RunContext(
@@ -214,7 +213,7 @@ private fun runProbe(args: Array<String>): Int {
     val cases = profileCases().filter { name == null || it.name == name }
     if (cases.isEmpty()) throw ReviewFailure(FailureReason.CONFIG)
     val apiKey = System.getenv("OPENAI_API_KEY")?.takeIf(String::isNotBlank) ?: throw ReviewFailure(FailureReason.CONFIG)
-    val profile = supportedProfile(PROFILE_MODEL)
+    val profile = configuredProfile(System.getenv("LLM_MODEL") ?: throw ReviewFailure(FailureReason.CONFIG))
     val rules = RunContext::class.java.getResourceAsStream("/review-prompt.md")
         ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: throw ReviewFailure(FailureReason.CONFIG)
     val prepared = cases.map { it to it.prepareVerified() }

@@ -170,7 +170,7 @@ private fun runCli(budget: ReviewBudget): ReviewExecution {
     val env: (String) -> String? = System::getenv
     val ctx = loadRunContext(env, ::readEventFile) ?: return ReviewExecution(Outcome.IGNORED)
     requireActive(budget)
-    val profile = supportedProfile(requiredEnv(env, "LLM_MODEL"))
+    val profile = configuredProfile(requiredEnv(env, "LLM_MODEL"))
     val token = requiredEnv(env, "GITHUB_TOKEN")
     val apiKey = requiredEnv(env, "OPENAI_API_KEY")
     val rules = loadTrustedRules()

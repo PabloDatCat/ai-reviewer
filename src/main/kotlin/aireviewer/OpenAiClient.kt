@@ -13,14 +13,13 @@ import kotlinx.serialization.json.put
 
 data class ModelProfile(val model: String, val reasoningEffort: String, val maxOutputTokens: Int)
 
-private val REVIEW_MODEL = ModelProfile("gpt-5.4-2026-03-05", "none", 6_000)
 private val RESPONSES_API = URI("https://api.openai.com/v1/responses")
 private val OPENAI_TIMEOUT = Duration.ofSeconds(60)
 private val INVALID_RESPONSE = FailureReason.INVALID_RESPONSE
 
-fun supportedProfile(model: String): ModelProfile {
-    if (model != REVIEW_MODEL.model) throw ReviewFailure(FailureReason.CONFIG)
-    return REVIEW_MODEL
+fun configuredProfile(model: String): ModelProfile {
+    if (model.isBlank()) throw ReviewFailure(FailureReason.CONFIG)
+    return ModelProfile(model, "none", 6_000)
 }
 
 class OpenAiClient(
@@ -31,7 +30,7 @@ class OpenAiClient(
     private val authorization = bearerValue(apiKey)
 
     init {
-        if (profile != supportedProfile(profile.model)) throw ReviewFailure(FailureReason.CONFIG)
+        if (profile != configuredProfile(profile.model)) throw ReviewFailure(FailureReason.CONFIG)
     }
 
     override fun review(diff: PreparedDiff, rules: String): ReviewResult {

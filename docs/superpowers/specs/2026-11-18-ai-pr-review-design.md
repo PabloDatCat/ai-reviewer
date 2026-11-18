@@ -51,7 +51,7 @@ Job concurrency: `group: ai-review-pr-${{ github.event.pull_request.number }}`, 
 - Job timeout-minutes: 15, включая checkout и сборку, без времени ожидания очереди; CLI deadline: 14 минут с начала процесса по System.nanoTime.
 - Concurrency: job-группа ai-review-pr-${{ github.event.pull_request.number }}, cancel-in-progress: false, queue: max; максимум одно активное ревью на один PR/MR, разные PR могут проверяться параллельно.
 - Максимум 50 файлов и 30 000 символов подготовленного diff; source blob не более 256 KiB, суммарно не более 2 MiB декодированных source bytes; один OpenAI-запрос, store: false.
-- Профиль модели: gpt-5.4-2026-03-05, reasoning.effort: none, max_output_tokens: 6000; LLM_MODEL обязан совпадать с этим snapshot; другой профиль требует явного изменения trusted config и повторной приёмки.
+- Имя модели берётся из обязательной переменной LLM_MODEL, задаваемой в GitHub Actions; allowlist и значение по умолчанию отсутствуют. Параметры запроса: reasoning.effort: none, max_output_tokens: 6000.
 - Максимум 5 замечаний; severity: high или medium; title: 1–120 символов, explanation: 1–1500 символов; file входит в snapshot; side: OLD или NEW, startLine/endLine — проверенный диапазон 1–5 строк соответствующей стороны patch.
 - Каждое замечание имеет построенную reviewer ссылку через upstream repository: OLD — oldSha и старый путь, NEW — headSha и новый путь; Markdown открывается с ?plain=1 перед #L anchor; URL от модели не принимается.
 - Review categories: BUSINESS_LOGIC, BACKWARD_COMPATIBILITY, RACE_CONDITION, CONTRACT_VIOLATION, ERROR_HANDLING; FORMAT/CODE_STYLE/NAMING/MISSING_TESTS/GENERAL_REFACTORING исключены.
@@ -95,9 +95,9 @@ Strict JSON schema и локальная валидация отвергают �
 
 ## Профиль OpenAI
 
-Кандидат для MVP: `gpt-5.4-2026-03-05`, явно `reasoning: { effort: "none" }`, `max_output_tokens: 6000`, `store: false`, text.format strict JSON schema, без tools, background и SSE. LLM_MODEL обязан равняться этому snapshot; неизвестное значение/alias/другой effort отклоняется как CONFIG до сетевых запросов. Отсутствие reasoning-параметра не означает отключение reasoning. Значения запроса формирует доверенный ModelProfile, а не env с произвольными параметрами и не PR.
+Имя модели передаётся в OpenAI из обязательной переменной `LLM_MODEL` без сверки с фиксированным именем, snapshot или allowlist. Пустое значение отклоняется как CONFIG до сетевых запросов. Модель выбирается через GitHub repository variable; изменения кода для её смены не нужны. Запрос сохраняет `reasoning: { effort: "none" }`, `max_output_tokens: 6000`, `store: false` и text.format strict JSON schema, без tools, background и SSE. Выбранная модель должна поддерживать Responses API и эти параметры. Значения не принимаются из содержимого PR.
 
-6000 заменяет прежние 2000: бюджет должен вмещать JSON, координаты и до пяти объяснений. Это кандидат на приёмку, не утверждение, что live API уже проверен. Перед первым production запуском корпоративный проект подтверждает доступ к snapshot, strict schema, completed JSON на diff около 30 000 символов, до пяти замечаний, русских/Unicode строках и при deadline 60 секунд. Записать profile, output/reasoning usage и latency без кода/секретов. Если проверки не проходят, rollout блокируется; корректировка profile требует явного trusted изменения и повторения проверок. Для reasoning-профиля бюджет должен учитывать reasoning и видимый JSON. Incomplete никогда не публикуется частично и не превращается в clean review; автоматического retry нет.
+6000 заменяет прежние 2000: бюджет должен вмещать JSON, координаты и до пяти объяснений. Это кандидат на приёмку, не утверждение, что live API уже проверен. Перед первым production запуском корпоративный проект подтверждает доступ к выбранной через LLM_MODEL модели, strict schema, completed JSON на diff около 30 000 символов, до пяти замечаний, русских/Unicode строках и при deadline 60 секунд. Записать profile, output/reasoning usage и latency без кода/секретов. Если проверки не проходят, rollout блокируется; модель можно сменить через LLM_MODEL без изменения кода; проверка выбранной модели повторяется для оценки её совместимости и качества. Для reasoning-профиля бюджет должен учитывать reasoning и видимый JSON. Incomplete никогда не публикуется частично и не превращается в clean review; автоматического retry нет.
 
 ## Правила содержательного review
 
@@ -145,5 +145,5 @@ Credentials только из env разрешённого шага; отдел�
 - [JDK 21 streaming body и interrupt](https://docs.oracle.com/en/java/javase/21/docs/api/java.net.http/java/net/http/HttpResponse.BodySubscribers.html#ofInputStream()).
 - [GitHub line links и Markdown plain view](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-a-permanent-link-to-a-code-snippet).
 - [Private fork permissions и Git network](https://docs.github.com/en/pull-requests/reference/forks).
-- [GPT-5.4 snapshot/effort](https://developers.openai.com/api/docs/models/gpt-5.4), [reasoning token budget](https://developers.openai.com/api/docs/guides/reasoning).
+- [Модели OpenAI](https://developers.openai.com/api/docs/models), [reasoning token budget](https://developers.openai.com/api/docs/guides/reasoning).
 - [Actions security](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target), [concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).

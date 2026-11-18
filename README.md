@@ -6,7 +6,7 @@ GitHub Actions запускает Kotlin CLI по метке **ai-review**. Revi
 
 1. Опубликуйте workflow, исходники CLI, доверенный prompt, файлы Gradle и Wrapper в защищённой доверенной ветке репозитория. Для первичной настройки опубликуйте workflow в default branch. Проверьте правила Actions организации и репозитория для события `pull_request_target` и доступность GitHub-hosted runner.
 2. Создайте метку `ai-review`. Для запуска её ставит пользователь с эффективным GitHub permission `write` или `admin` на открытый PR, который вышел из draft.
-3. В настройках **Secrets and variables → Actions** сохраните `OPENAI_API_KEY` как repository secret с ключом API-проекта организации. Установите repository variable `LLM_MODEL` в `gpt-5.4-2026-03-05`. `GITHUB_TOKEN` выдаёт сам GitHub.
+3. В настройках **Secrets and variables → Actions** сохраните `OPENAI_API_KEY` как repository secret с ключом API-проекта организации. Установите repository variable `LLM_MODEL` в имя выбранной модели OpenAI. Имя передаётся в API без проверки на фиксированный snapshot или allowlist; для смены модели достаточно изменить переменную. `GITHUB_TOKEN` выдаёт сам GitHub.
 4. Выполните проверки приёмки ниже в подготовленном репозитории. Профиль OpenAI и smoke-проверки GitHub нужны перед production rollout.
 
 Событие `pull_request_target` обрабатывается только при установке метки. Workflow делает checkout `github.workflow_sha` в `reviewer` с `persist-credentials: false`, собирает CLI через Gradle Wrapper и передаёт переменные с ключами только шагу запуска. Файлы PR поступают в reviewer как данные через Compare и Git Data API. Тесты кода PR запускаются в отдельном непривилегированном CI. GitHub объявил применение default block с 2 декабря 2026 года для затронутых публичных репозиториев со старой политикой по умолчанию. Проверьте policy insights. Workflow использует доверенный SHA и сохраняет защиту checkout. [Безопасность pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
@@ -54,7 +54,7 @@ actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected
 
 ## Приёмка профиля OpenAI
 
-Проба запускается вручную вне Actions. Она использует только синтетический код и тот же `OpenAiClient`, prompt, строгую схему и HTTP transport, что и CLI. Перед запуском передайте тестовый ключ API-проекта через переменную окружения `OPENAI_API_KEY`.
+Проба запускается вручную вне Actions. Она использует только синтетический код и тот же `OpenAiClient`, prompt, строгую схему и HTTP transport, что и CLI. Перед запуском задайте переменные окружения `OPENAI_API_KEY` и `LLM_MODEL`. Модель должна поддерживать Responses API, strict JSON schema и используемый параметр `reasoning.effort=none`.
 
 ~~~~sh
 ./gradlew testClasses installDist
@@ -63,11 +63,11 @@ actionlint -ignore '^unexpected key "queue" for "concurrency" section\. expected
   aireviewer.LiveProfileProbe --show-synthetic-findings
 ~~~~
 
-Проба делает по одному запросу на каждый из восьми сценариев для точного профиля `gpt-5.4-2026-03-05`, `reasoning.effort=none`, `max_output_tokens=6000`. Ожидаются пустые findings для изменений только стиля и для случая с явно показанной валидацией, по одному реалистичному замечанию каждой из пяти категорий в пяти коротких случаях и пять замечаний для Unicode diff около 30 000 символов. Последний случай также проверяет форматирование корректных ссылок. Параметр `--case=<имя>` выбирает один сценарий для отдельной проверки.
+Проба делает по одному запросу на каждый из восьми сценариев для модели из `LLM_MODEL` с параметрами `reasoning.effort=none`, `max_output_tokens=6000`. Ожидаются пустые findings для изменений только стиля и для случая с явно показанной валидацией, по одному реалистичному замечанию каждой из пяти категорий в пяти коротких случаях и пять замечаний для Unicode diff около 30 000 символов. Последний случай также проверяет форматирование корректных ссылок. Параметр `--case=<имя>` выбирает один сценарий для отдельной проверки.
 
 Код 0 подтверждает автоматические проверки схемы, координат, файлов, категорий и формирования ссылок. Для семантической приёмки оцените замечания из вывода этого же запуска с `--show-synthetic-findings`. Для каждого замечания подтвердите достижимость предпосылок, конкретную последовательность действий и наблюдаемое последствие.
 
-Сохраните факт completed или отказа, HTTP status, latency, output и reasoning token usage по каждому случаю. Не сохраняйте diff, ключи или необработанный ответ API. При ошибке транспорта, доступа, схемы или неполном ответе проба останавливает оставшиеся вызовы. Провал профиля останавливает rollout. Изменение профиля требует отдельного доверенного изменения и повторной приёмки.
+Сохраните факт completed или отказа, HTTP status, latency, output и reasoning token usage по каждому случаю. Не сохраняйте diff, ключи или необработанный ответ API. При ошибке транспорта, доступа, схемы или неполном ответе проба останавливает оставшиеся вызовы. Провал профиля останавливает rollout. Для смены модели измените `LLM_MODEL`; код менять не нужно. Повторная приёмка позволяет оценить совместимость и качество выбранной модели.
 
 ## Приёмка на GitHub
 
