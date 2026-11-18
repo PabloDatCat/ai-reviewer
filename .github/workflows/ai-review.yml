@@ -11,8 +11,7 @@ jobs:
     if: >-
       github.event.label.name == 'ai-review' &&
       github.event.pull_request.state == 'open' &&
-      !github.event.pull_request.draft &&
-      github.run_attempt == '1'
+      !github.event.pull_request.draft
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
