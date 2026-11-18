@@ -233,7 +233,7 @@ data class HttpReply(val status: Int, val body: String,
 
 ## Task 5: Workflow и live acceptance
 
-**Files:** Create `.github/workflows/ai-review.yml`, `README.md`.
+**Files:** Create `.github/workflows/ai-review.yml`, `README.md`, opt-in `src/test/kotlin/aireviewer/LiveProfileProbe.kt` и проверку его синтетических fixtures. Probe не является JUnit-тестом и не запускает API при обычном build/test; использует production client/prompt/transport, ключ только из env, метрики без raw provider body/credentials. Координатор запускает его отдельно после локальной сборки.
 
 **Interfaces:** Consumes: installDist CLI и runtime env Task 4. Produces: рабочий label workflow и инструкция с проверяемыми deployment gates; live acceptance не выдаётся за уже выполненную.
 
