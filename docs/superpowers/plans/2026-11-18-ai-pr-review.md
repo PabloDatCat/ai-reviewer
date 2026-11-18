@@ -8,7 +8,7 @@
 
 **Tech Stack:** Kotlin 2.2.21, JVM 21, Gradle Wrapper 8.14.3, kotlinx.serialization-json 1.9.0, JDK HttpClient, JUnit Jupiter 5.12.2, GitHub Actions, OpenAI Responses API; без Spring Boot.
 
-**Spec:** [2026-11-18-ai-pr-review-design.md](../specs/2026-11-18-ai-pr-review-design.md). План обновлён после review; production code и тесты ещё не написаны.
+**Spec:** [2026-11-18-ai-pr-review-design.md](../specs/2026-11-18-ai-pr-review-design.md). Локальная реализация подготовлена; актуальный статус приёмки — в [README](../../../README.md).
 
 ## Global Constraints
 
@@ -79,7 +79,7 @@ interface GitHubApi {
     fun permission(actor: String): String
     fun pullRequest(number: Int): PullRequestState
     fun comparison(baseSha: String, headSha: String): DiffSnapshot
-    fun sourceFile(commitSha: String, path: String): SourceFile
+    fun sourceFile(commitSha: String, path: String, maxBytes: Int = 256 * 1024): SourceFile
     fun comment(number: Int, body: String)
 }
 fun interface LlmReviewer {
@@ -263,4 +263,4 @@ data class HttpReply(val status: Int, val body: String,
 - Типы и функции едины между задачами; прежние отдельные mergeBase/files методы и ReviewSnapshot исключены. Новые Verify/Transport файлы имеют конкретную ответственность, Spring Boot не добавляется.
 - Вся прежняя приёмка сохранена: trust boundary forks, authorization, SHA/state, реалистичность, категории, обязательные ссылки, 15 минут и один review на PR. Добавленные tests проверяют внешние эффекты и lifecycle, а не строки implementation.
 - Из-за source verification, сетевого lifecycle и live role/profile checks прежняя оценка четырёх этапов по сумме 60 минут больше не используется. Первоначальный час — ограничение исходной задачи, а не доказанный срок полного набора новой приёмки. Безопасность и обязательные ссылки не сокращаются молча.
-- Это план, а не готовый reviewer. Для исполнения связанного CLI рекомендуется работа в этой сессии через executing-plans; можно выбрать subagent-driven-development. Review предыдущей редакции проведён независимым саб-агентом; текущий документ проверяется отдельно на согласованность, без утверждения о выполненных unit/live tests. Commit/push, изменение GitHub settings и платные API-вызовы при обновлении документов не выполняются.
+- Это согласованный план реализации; актуальный статус кода и приёмки указан в README. Для исполнения связанного CLI рекомендуется работа в этой сессии через executing-plans; можно выбрать subagent-driven-development. Review предыдущей редакции проведён независимым саб-агентом; текущий документ проверяется отдельно на согласованность, без утверждения о выполненных unit/live tests. Commit/push, изменение GitHub settings и платные API-вызовы при обновлении документов не выполняются.

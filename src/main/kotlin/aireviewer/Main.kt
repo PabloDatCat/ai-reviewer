@@ -64,8 +64,8 @@ private class ReviewRun(
             }
             diff = prepareDiff(snapshot.files)
             verifyPatchText(diff, snapshot, object : GitHubApi by github {
-                override fun sourceFile(commitSha: String, path: String): SourceFile =
-                    request { github.sourceFile(commitSha, path) }
+                override fun sourceFile(commitSha: String, path: String, maxBytes: Int): SourceFile =
+                    request { github.sourceFile(commitSha, path, maxBytes) }
             })
         } catch (failure: ReviewFailure) {
             val outcome = if (failure.reason in skippableInputFailures) Outcome.SKIPPED else Outcome.ERROR

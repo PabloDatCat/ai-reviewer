@@ -11,7 +11,10 @@ fun verifyPatchText(diff: PreparedDiff, snapshot: DiffSnapshot, github: GitHubAp
     fun verifySide(sha: String, path: String, expected: Map<Int, String>, noFinalLf: Set<Int>) {
         if (expected.isEmpty()) return
 
-        val bytes = github.sourceFile(sha, path).bytes
+        val remaining = MAX_TOTAL_SOURCE_BYTES - total
+        if (remaining <= 0) throw ReviewFailure(FailureReason.LIMIT)
+        val allowance = minOf(MAX_SOURCE_BYTES, remaining)
+        val bytes = github.sourceFile(sha, path, allowance).bytes
         if (bytes.size > MAX_SOURCE_BYTES || bytes.size > MAX_TOTAL_SOURCE_BYTES - total) {
             throw ReviewFailure(FailureReason.LIMIT)
         }

@@ -107,17 +107,21 @@ class SnapshotVerifierTest {
         val old = ("old\n" + "x".repeat(256 * 1024 - 4)).toByteArray()
         val new = ("new\n" + "x".repeat(256 * 1024 - 4)).toByteArray()
         val available = files.flatMap { file -> listOf(OLD to file.path to old, HEAD to file.path to new) }.toMap()
-        verifyPatchText(prepareDiff(files), fixtureSnapshot(files), FakeSources(available))
+        val exactlyAtLimit = FakeSources(available)
+        verifyPatchText(prepareDiff(files), fixtureSnapshot(files), exactlyAtLimit)
+        assertEquals(8, exactlyAtLimit.calls.size)
 
         val additional = files + ChangedFile(
             "over.txt", "@@ -0,0 +1 @@\n+x\n\\ No newline at end of file", additions = 1, deletions = 0,
         )
+        val exceeded = FakeSources(available + (HEAD to "over.txt" to "x".toByteArray()))
         assertFailure(
             FailureReason.LIMIT,
             prepareDiff(additional),
             fixtureSnapshot(additional),
-            FakeSources(available + (HEAD to "over.txt" to "x".toByteArray())),
+            exceeded,
         )
+        assertEquals(exactlyAtLimit.calls, exceeded.calls)
     }
 
     @Test
@@ -199,7 +203,7 @@ class SnapshotVerifierTest {
 
         val calls = mutableListOf<Pair<String, String>>()
 
-        override fun sourceFile(commitSha: String, path: String): SourceFile {
+        override fun sourceFile(commitSha: String, path: String, maxBytes: Int): SourceFile {
             val key = commitSha to path
             calls += key
             return SourceFile(available[key] ?: throw ReviewFailure(FailureReason.SOURCE_UNAVAILABLE))

@@ -24,7 +24,7 @@ internal class ProfileCase(val name: String, private val changes: List<ProfileCh
         val byPath = changes.associateBy { it.path }
         val diff = prepareDiff(snapshot.files)
         verifyPatchText(diff, snapshot, object : GitHubApi {
-            override fun sourceFile(commitSha: String, path: String): SourceFile {
+            override fun sourceFile(commitSha: String, path: String, maxBytes: Int): SourceFile {
                 val change = byPath.getValue(path)
                 val lines = when (commitSha) {
                     OLD_SHA -> change.before

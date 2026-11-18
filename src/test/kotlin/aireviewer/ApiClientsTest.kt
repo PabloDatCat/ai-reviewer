@@ -233,6 +233,48 @@ class ApiClientsTest {
     }
 
     @Test
+    fun remainingSourceAllowanceStopsExhaustedAndKnownOversizedReads() {
+        for (allowance in listOf(0, -1)) {
+            val transport = sourceFixture()
+            assertFailure(FailureReason.LIMIT) { github(transport).sourceFile(OLD, "a.kt", allowance) }
+            assertTrue(transport.requests.isEmpty())
+        }
+        val tree = treeJson(TREE, listOf(entryJson("a.kt", "100644", "blob", size = "2")))
+        val transport = sourceFixture(tree = HttpReply(200, tree))
+        assertFailure(FailureReason.LIMIT) { github(transport).sourceFile(OLD, "a.kt", 1) }
+        assertEquals(2, transport.requests.size)
+    }
+
+    @Test
+    fun remainingSourceAllowanceRejectsDeclaredAndEncodedOversizeBeforeDecoding() {
+        val invalidUtf8 = byteArrayOf(0xc3.toByte(), 0x28)
+        for (blob in listOf(
+            blobJson(invalidUtf8, content = "!"),
+            blobJson(invalidUtf8, declaredSize = 1),
+        )) {
+            val transport = sourceFixture(blob = HttpReply(200, blob))
+            assertFailure(FailureReason.LIMIT) { github(transport).sourceFile(OLD, "a.kt", 1) }
+            assertEquals(3, transport.requests.size)
+        }
+    }
+
+    @Test
+    fun remainingSourceAllowanceAcceptsExactPaddedAndUnpaddedLengths() {
+        for (text in listOf("x", "xy", "xyz")) {
+            val bytes = text.encodeToByteArray()
+            val encoded = Base64.getEncoder().encodeToString(bytes)
+            for (content in setOf(encoded, encoded.trimEnd('='))) {
+                val transport = sourceFixture(blob = HttpReply(200, blobJson(bytes, content = content)))
+                assertEquals(text, github(transport).sourceFile(OLD, "a.kt", bytes.size).bytes.decodeToString())
+            }
+        }
+        for (content in listOf("A", "eA=", "eA===", "e=A=", "====")) {
+            val transport = sourceFixture(blob = HttpReply(200, blobJson(byteArrayOf(120), content = content)))
+            assertFailure(FailureReason.SOURCE_UNAVAILABLE) { github(transport).sourceFile(OLD, "a.kt", 1) }
+        }
+    }
+
+    @Test
     fun largeRegularFileWithASmallPatchIsRejectedBeforeTheBlobGet() {
         val largeFile = ByteArray(1_048_576) { 'x'.code.toByte() }
         "old\n".encodeToByteArray().copyInto(largeFile)

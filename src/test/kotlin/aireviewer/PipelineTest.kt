@@ -167,7 +167,23 @@ class PipelineTest {
         val fixture = Fixture(snapshot = snapshot().copy(files = files), sources = sourceData)
         assertFixedDiagnostic(fixture, Outcome.SKIPPED)
         assertEquals(0, fixture.llm.attempts)
-        assertEquals(sourceCall(HEAD, "extra.kt"), fixture.calls.dropLast(2).last())
+        assertEquals(8, fixture.calls.count { it.startsWith("source:") })
+        assertEquals(sourceCall(HEAD, "4.kt"), fixture.calls.dropLast(2).last())
+    }
+
+    @Test
+    fun positiveRemainingSourceAllowanceReachesTheApiWrapper() {
+        val files = (1..4).map { file(path = "$it.kt", oldPath = null) } +
+            ChangedFile("extra.kt", "@@ -0,0 +1 @@\n+x\n\\ No newline at end of file", additions = 1, deletions = 0)
+        val old = "old\n".encodeToByteArray().copyOf(256 * 1024).apply { fill('x'.code.toByte(), 4) }
+        val new = "new\n".encodeToByteArray().copyOf(256 * 1024).apply { fill('x'.code.toByte(), 4) }
+        val sourceData = files.take(4).flatMap { listOf((OLD to it.path) to old, (HEAD to it.path) to new) }.toMap() +
+            ((HEAD to "4.kt") to new.copyOf(new.size - 1)) + ((HEAD to "extra.kt") to "x".encodeToByteArray())
+        val fixture = Fixture(snapshot = snapshot().copy(files = files), sources = sourceData,
+            respond = { ReviewResult(emptyList()) })
+        assertEquals(Outcome.REVIEWED, fixture.run())
+        assertEquals(List(8) { 256 * 1024 } + listOf(1), fixture.github.sourceAllowances)
+        assertEquals(1, fixture.llm.attempts)
     }
 
     @Test
@@ -405,6 +421,7 @@ class PipelineTest {
     ) : GitHubApi {
         private var read = 0
         val comments = mutableListOf<String>()
+        val sourceAllowances = mutableListOf<Int>()
         var onCall: (String) -> Unit = {}
 
         override fun permission(actor: String): String {
@@ -422,7 +439,8 @@ class PipelineTest {
             return snapshot
         }
 
-        override fun sourceFile(commitSha: String, path: String): SourceFile {
+        override fun sourceFile(commitSha: String, path: String, maxBytes: Int): SourceFile {
+            sourceAllowances += maxBytes
             record(sourceCall(commitSha, path))
             return SourceFile(sources.getValue(commitSha to path))
         }

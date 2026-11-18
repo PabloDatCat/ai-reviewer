@@ -85,7 +85,7 @@ interface GitHubApi {
     fun permission(actor: String): String
     fun pullRequest(number: Int): PullRequestState
     fun comparison(baseSha: String, headSha: String): DiffSnapshot
-    fun sourceFile(commitSha: String, path: String): SourceFile
+    fun sourceFile(commitSha: String, path: String, maxBytes: Int = 256 * 1024): SourceFile
     fun comment(number: Int, body: String)
 }
 

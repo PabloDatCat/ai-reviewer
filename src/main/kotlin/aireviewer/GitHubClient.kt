@@ -100,8 +100,10 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
         return DiffSnapshot(baseSha, headSha, oldSha, changedFiles)
     }
 
-    override fun sourceFile(commitSha: String, path: String): SourceFile {
+    override fun sourceFile(commitSha: String, path: String, maxBytes: Int): SourceFile {
         val reason = FailureReason.SOURCE_UNAVAILABLE
+        if (maxBytes <= 0) throw ReviewFailure(FailureReason.LIMIT)
+        val allowance = minOf(MAX_BLOB_BYTES, maxBytes)
         val components = path.split('/')
         if (!fullGitSha.matches(commitSha) || components.any { !validComponent(it) }) throw ReviewFailure(reason)
 
@@ -119,10 +121,10 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
         val file = readTree(tree)[components.last()] ?: throw ReviewFailure(reason)
         if (file.mode !in setOf("100644", "100755") || file.type != "blob") throw ReviewFailure(reason)
         // The base64 representation of a large file can exceed the transport limit.
-        if (file.advertisedSize != null && file.advertisedSize.requireNonnegativeLong(reason) > MAX_BLOB_BYTES) {
+        if (file.advertisedSize != null && file.advertisedSize.requireNonnegativeLong(reason) > allowance) {
             throw ReviewFailure(FailureReason.LIMIT)
         }
-        return readBlob(file.sha)
+        return readBlob(file.sha, allowance)
     }
 
     override fun comment(number: Int, body: String) {
@@ -160,20 +162,23 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
         }
     }
 
-    private fun readBlob(sha: String): SourceFile {
+    private fun readBlob(sha: String, allowance: Int): SourceFile {
         val reason = FailureReason.SOURCE_UNAVAILABLE
         val blob = getObject("/git/blobs/$sha", reason, source = true)
         blob.requireMatchingSha(sha, reason)
         if (blob.stringField("encoding") != "base64") throw ReviewFailure(reason)
         val size = blob.requireNonnegativeInt("size", reason)
-        if (size > MAX_BLOB_BYTES) throw ReviewFailure(FailureReason.LIMIT)
+        if (size > allowance) throw ReviewFailure(FailureReason.LIMIT)
         val content = blob.requireString("content", reason).replace("\r", "").replace("\n", "")
+        val decodedSize = decodedBase64Size(content, reason)
+        if (decodedSize > allowance) throw ReviewFailure(FailureReason.LIMIT)
+        if (decodedSize != size.toLong()) throw ReviewFailure(reason)
         val bytes = try {
             Base64.getDecoder().decode(content)
         } catch (_: IllegalArgumentException) {
             throw ReviewFailure(reason)
         }
-        if (bytes.size > MAX_BLOB_BYTES) throw ReviewFailure(FailureReason.LIMIT)
+        if (bytes.size > allowance) throw ReviewFailure(FailureReason.LIMIT)
         if (bytes.size != size) throw ReviewFailure(reason)
         try {
             bytes.decodeToString(throwOnInvalidSequence = true)
@@ -197,6 +202,28 @@ class GitHubClient(repo: String, token: String, private val transport: HttpTrans
         .header("X-GitHub-Api-Version", "2022-11-28")
 
     private data class TreeEntry(val mode: String, val type: String, val sha: String, val advertisedSize: JsonElement?)
+}
+
+// Validate the basic Base64 shape before allocating any decoded source bytes.
+// The JDK decoder accepts unpadded final groups of two or three characters.
+private fun decodedBase64Size(content: String, reason: FailureReason): Long {
+    val padding = when {
+        content.endsWith("==") -> 2
+        content.endsWith("=") -> 1
+        else -> 0
+    }
+    val dataLength = content.length - padding
+    if (dataLength % 4 == 1 || (padding > 0 && content.length % 4 != 0)) {
+        throw ReviewFailure(reason)
+    }
+    for (index in 0 until dataLength) {
+        val character = content[index]
+        if (character !in 'A'..'Z' && character !in 'a'..'z' &&
+            character !in '0'..'9' && character != '+' && character != '/') {
+            throw ReviewFailure(reason)
+        }
+    }
+    return dataLength.toLong() * 6 / 8
 }
 
 private fun validComponent(path: String): Boolean =
