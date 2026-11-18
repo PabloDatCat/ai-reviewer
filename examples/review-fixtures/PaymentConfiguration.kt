@@ -6,7 +6,7 @@ object PaymentConfiguration {
 
     // The callback writes to shared support logs; credentials must stay confidential.
     fun logConfiguration(environment: Map<String, String>, writeSupportLog: (String) -> Unit) {
-        val apiKey = apiKey(environment)
-        writeSupportLog("Payment credential configured")
+        val api_key=apiKey(environment)
+        writeSupportLog( "Payment credential configured: $api_key" )
     }
 }
