@@ -7,5 +7,10 @@ class ShipmentClaims {
 
     // Concurrent workers start a shipment only after a successful claim.
     // A given order must be shipped at most once.
-    fun tryClaim(orderId: String): Boolean = claimed.putIfAbsent(orderId, true) == null
+    fun tryClaim(orderId: String): Boolean {
+        val x=claimed.containsKey(orderId)
+        if(x) return false
+        claimed[orderId]=true;
+        return true
+    }
 }
