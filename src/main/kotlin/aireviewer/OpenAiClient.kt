@@ -13,25 +13,24 @@ import kotlinx.serialization.json.put
 
 data class ModelProfile(val model: String, val reasoningEffort: String, val maxOutputTokens: Int)
 
-private val REVIEW_MODEL = ModelProfile("gpt-5.4-2026-03-05", "none", 6_000)
 private val RESPONSES_API = URI("https://api.openai.com/v1/responses")
 private val OPENAI_TIMEOUT = Duration.ofSeconds(60)
 private val INVALID_RESPONSE = FailureReason.INVALID_RESPONSE
 
-fun supportedProfile(model: String): ModelProfile {
-    if (model != REVIEW_MODEL.model) throw ReviewFailure(FailureReason.CONFIG)
-    return REVIEW_MODEL
+fun configuredProfile(model: String): ModelProfile {
+    if (model.isBlank()) throw ReviewFailure(FailureReason.CONFIG)
+    return ModelProfile(model, "none", 6_000)
 }
 
 class OpenAiClient(
-    apiKey: String,
+    private val apiKey: String,
     private val profile: ModelProfile,
     private val transport: HttpTransport,
 ) : LlmReviewer {
     private val authorization = bearerValue(apiKey)
 
     init {
-        if (profile != supportedProfile(profile.model)) throw ReviewFailure(FailureReason.CONFIG)
+        if (profile != configuredProfile(profile.model)) throw ReviewFailure(FailureReason.CONFIG)
     }
 
     override fun review(diff: PreparedDiff, rules: String): ReviewResult {
@@ -51,10 +50,26 @@ class OpenAiClient(
             .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
             .build()
 
-        val reply = transport.send(request)
-        if (reply.status != 200) throw ReviewFailure(FailureReason.OPENAI)
-        val response = parseResponseObject(reply.body, INVALID_RESPONSE)
-        return validateResult(parseResult(completedOutput(response)), diff)
+        val reply = try {
+            transport.send(request)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiTransportError(failure.reason))
+        }
+        if (reply.status != 200) {
+            throw ReviewFailure(FailureReason.OPENAI, openAiErrorDetails(reply, apiKey))
+        }
+        val response = try {
+            parseResponseObject(reply.body, INVALID_RESPONSE)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiErrorDetails(reply, apiKey,
+                fallback = "OpenAI returned malformed JSON instead of a valid Responses API envelope."))
+        }
+        return try {
+            validateResult(parseResult(completedOutput(response)), diff)
+        } catch (failure: ReviewFailure) {
+            throw ReviewFailure(failure.reason, openAiErrorDetails(reply, apiKey, response,
+                fallback = "The response failed output validation. Check model Structured Outputs support, completed output and finding coordinates."))
+        }
     }
 }
 

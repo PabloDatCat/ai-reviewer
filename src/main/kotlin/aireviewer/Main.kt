@@ -22,18 +22,24 @@ private val skippableInputFailures = setOf(
 fun runReview(ctx: RunContext, github: GitHubApi, llm: LlmReviewer, rules: String, budget: ReviewBudget): Outcome =
     ReviewRun(ctx, github, llm, rules, budget).run().outcome
 
-private data class ReviewExecution(val outcome: Outcome, val reason: FailureReason? = null)
+private data class ReviewExecution(
+    val outcome: Outcome,
+    val reason: FailureReason? = null,
+    val openAiError: OpenAiErrorDetails? = null,
+)
 
 private class ReviewRun(
-    private val ctx: RunContext,
+    private var ctx: RunContext,
     private val github: GitHubApi,
     private val llm: LlmReviewer,
     private val rules: String,
     private val budget: ReviewBudget,
 ) {
+    private var openAiError: OpenAiErrorDetails? = null
+
     fun run(): ReviewExecution {
-        if (ctx.runAttempt != 1) return ReviewExecution(Outcome.IGNORED)
-        return try {
+        if (ctx.runAttempt < 1) return ReviewExecution(Outcome.IGNORED)
+        val execution = try {
             reviewAuthorizedPullRequest()
         } catch (failure: TransportCleanupFailure) {
             throw failure
@@ -43,15 +49,21 @@ private class ReviewRun(
         } catch (_: CancellationException) {
             ReviewExecution(Outcome.ERROR, FailureReason.DEADLINE)
         } catch (failure: ReviewFailure) {
-            ReviewExecution(Outcome.ERROR, failure.reason)
+            ReviewExecution(Outcome.ERROR, failure.reason, failure.openAiError)
         } catch (_: Exception) {
             ReviewExecution(Outcome.ERROR)
         }
+        // Keep provider diagnostics available to the CLI without publishing them to the PR.
+        return execution.copy(openAiError = openAiError ?: execution.openAiError)
     }
 
     private fun reviewAuthorizedPullRequest(): ReviewExecution {
         if (request { github.permission(ctx.actor) } !in writePermissions) return ReviewExecution(Outcome.IGNORED)
         val original = request { github.pullRequest(ctx.number) }
+        if (ctx.runAttempt > 1) {
+            ctx = ctx.copy(baseSha = original.baseSha, headSha = original.headSha,
+                baseRef = original.baseRef, headRef = original.headRef)
+        }
         if (!original.matchesEvent()) return ReviewExecution(Outcome.STALE)
 
         val snapshot: DiffSnapshot
@@ -81,6 +93,7 @@ private class ReviewRun(
             if (failure is TransportCleanupFailure || failure is InterruptedException || failure is CancellationException) {
                 throw failure
             }
+            openAiError = (failure as? ReviewFailure)?.openAiError
             val reason = (failure as? ReviewFailure)?.reason ?: FailureReason.OPENAI
             return diagnostic(original, ReviewExecution(Outcome.ERROR, reason))
         }
@@ -98,19 +111,18 @@ private class ReviewRun(
         execution: ReviewExecution,
         render: () -> String,
     ): ReviewExecution {
+        if (execution.outcome == Outcome.ERROR) return execution
         if (!stillCurrent(original)) return ReviewExecution(Outcome.STALE)
         val body = render()
-        val published = if (execution.outcome == Outcome.REVIEWED &&
+        if (execution.outcome == Outcome.REVIEWED &&
             body == renderComment(ctx, Outcome.ERROR, null, null, null)
         ) {
-            ReviewExecution(Outcome.ERROR, FailureReason.INVALID_RESPONSE)
-        } else {
-            execution
+            return ReviewExecution(Outcome.ERROR, FailureReason.INVALID_RESPONSE)
         }
 
         // A failed response can follow an accepted POST. This is the only comment attempt.
         request { github.comment(ctx.number, body) }
-        return published
+        return execution
     }
 
     private fun stillCurrent(original: PullRequestState): Boolean {
@@ -139,7 +151,7 @@ private fun requireActive(budget: ReviewBudget) {
 internal fun loadRunContext(env: (String) -> String?, readEvent: (String) -> String): RunContext? {
     if (env("GITHUB_EVENT_NAME") != "pull_request_target") return null
     val attempt = env("GITHUB_RUN_ATTEMPT")?.toIntOrNull()
-    if (attempt != 1) return null
+    if (attempt == null || attempt < 1) return null
 
     val repo = requiredEnv(env, "GITHUB_REPOSITORY")
     val actor = requiredEnv(env, "GITHUB_ACTOR")
@@ -170,7 +182,7 @@ private fun runCli(budget: ReviewBudget): ReviewExecution {
     val env: (String) -> String? = System::getenv
     val ctx = loadRunContext(env, ::readEventFile) ?: return ReviewExecution(Outcome.IGNORED)
     requireActive(budget)
-    val profile = supportedProfile(requiredEnv(env, "LLM_MODEL"))
+    val profile = configuredProfile(requiredEnv(env, "LLM_MODEL"))
     val token = requiredEnv(env, "GITHUB_TOKEN")
     val apiKey = requiredEnv(env, "OPENAI_API_KEY")
     val rules = loadTrustedRules()
@@ -202,11 +214,12 @@ fun main() {
         Thread.currentThread().interrupt()
         ReviewExecution(Outcome.ERROR, FailureReason.DEADLINE)
     } catch (failure: ReviewFailure) {
-        ReviewExecution(Outcome.ERROR, failure.reason)
+        ReviewExecution(Outcome.ERROR, failure.reason, failure.openAiError)
     } catch (_: Exception) {
         ReviewExecution(Outcome.ERROR)
     }
 
+    execution.openAiError?.let { System.err.println(it.logLine()) }
     val interrupted = Thread.currentThread().isInterrupted
     if (execution.outcome == Outcome.ERROR || interrupted) {
         val reason = if (interrupted) FailureReason.DEADLINE else execution.reason
